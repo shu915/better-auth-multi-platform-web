@@ -41,6 +41,9 @@ export const auth = betterAuth({
         issuer: baseURL,
         audience,
         expirationTime: "5m",
+        // By default the whole user record is embedded; keep only the standard
+        // claims (iat, iss, aud, exp) plus `sub` (the user id, set by Better Auth).
+        definePayload: () => ({}),
       },
     }),
   ],
