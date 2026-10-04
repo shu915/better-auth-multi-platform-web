@@ -22,6 +22,7 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 - `npm run dev`: 開発サーバー(localhost:3000)
 - `npm run build`: ビルド
 - `npm run lint`: lint
+- `npm test`: テスト(Vitest。`src/**/*.test.ts`。ロジックだけを対象にし、画面と E2E はまだ対象外)
 - `npm run db:generate`: マイグレーションファイルを生成(`drizzle/`)
 - `npm run db:migrate`: マイグレーションを DB に適用(`DATABASE_URL_UNPOOLED` を使う)
 - `npm run db:studio`: DB の中身を見る(Drizzle Studio)
