@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
@@ -12,6 +13,9 @@ export default async function Home() {
       <div className="space-y-4 text-center">
         <p className="text-sm text-zinc-600 dark:text-zinc-400">Signed in as</p>
         <p className="text-xl font-semibold">{session.user.email}</p>
+        <Link href="/profile" className="block text-sm underline">
+          Profile
+        </Link>
         <SignOutButton />
       </div>
     </main>
