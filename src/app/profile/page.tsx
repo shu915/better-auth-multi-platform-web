@@ -49,9 +49,17 @@ export default async function ProfilePage() {
             )}
           </div>
         </dl>
-        <Link href="/" className="text-sm underline">
-          Back
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/profile/edit"
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700"
+          >
+            Edit
+          </Link>
+          <Link href="/" className="text-sm underline">
+            Back
+          </Link>
+        </div>
       </div>
     </main>
   );
