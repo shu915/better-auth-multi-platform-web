@@ -1,0 +1,31 @@
+claude-progress.txt (web)
+最終更新: 2026-10-07
+新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
+
+## 完了したタスク
+- Better Auth でマジックリンクのログイン(パスワードなし)
+- JWT の発行(5分、payload は最小化)と、サーバー側の Go 呼び出し(callApi)
+- /profile(閲覧のみ): email と name はセッション、bio は Go の GET /me/profile
+- /profile/edit(編集): name と bio を編集して保存できる(Server Action `updateProfile`)
+  - name は Better Auth の updateUser(Web の DB)、bio は Go の PUT /me/profile
+  - 変更したフィールドだけ書く。一部失敗でも、成功した分は保存される(再送で直る)
+  - 全成功なら /profile に移り、一部失敗なら /profile/edit に残る
+- /profile と /profile/edit の画面の手動確認(人間が実施済み: 閲覧、Edit、保存後の遷移、一部失敗、Go 停止時、未ログイン)
+- Vitest のロジックテスト(52 件)
+- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
+- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの ESLint、応答終了時の tsc・lint・test。evaluator はビルド確認とレビューだけ担当
+
+## 実行中のタスク
+- プロフィール編集の PR を出す(api の PUT /me/profile の PR を先にマージする)
+
+## これからのタスク(順番)
+1. OAuth を有効にする(マジックリンクは必須のまま、OAuth は任意)
+2. 1 回デプロイする(公開前チェックリストを先に片付ける。CLAUDE.md 参照)
+3. タグを付ける
+4. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
+   - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
+   - 別のオリジンになるので、trustedOrigins の設定が要る
+
+## PR に含める変更(feature/profile-edit-form)
+- /profile の閲覧と編集の分割、プロフィール編集(actions.ts、profile-form.ts、components/profile-form.tsx、テスト)
+- evaluator.md、CLAUDE.md の更新、.claude/settings.json と .claude/hooks/ の追加
