@@ -11,21 +11,37 @@ claude-progress.txt (web)
   - 変更したフィールドだけ書く。一部失敗でも、成功した分は保存される(再送で直る)
   - 全成功なら /profile に移り、一部失敗なら /profile/edit に残る
 - /profile と /profile/edit の画面の手動確認(人間が実施済み: 閲覧、Edit、保存後の遷移、一部失敗、Go 停止時、未ログイン)
-- Vitest のロジックテスト(52 件)
+- Google ログイン(紐づけ・解除を含む)の実装と、自動検証(feature/oauth-google。未コミット)
+  - 設計: マジックリンクで作ったユーザーが root(sub が決まる)。Google は新規登録できず、ログイン済みのユーザーが /profile の「Link Google」で足す任意の手段(自動連携はしない。別メールの Google も可。解除できる)。環境変数 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を両方設定したときだけ有効。Go は変えない
+  - 方針は src/lib/google-auth-options.ts にあり、src/lib/google-auth.test.ts(7 件)が、本物の Better Auth をメモリ上の DB で動かして守っている(設定を壊すと落ちることを確認済み)
+  - 画面の手直し: ボタンのカーソルを pointer にした(globals.css)、エラー文を下に出して画面が動かないようにした(/login と /profile を上寄せ)
+  - 実際の Google での手動確認(人間が実施済み: 紐づけ、ログイン、解除、未紐づけ、同じメールの未紐づけ)
+  - 検証: tsc・lint・Vitest 84 件・build が通過
+  - evaluator は名前では呼べない(このセッションのエージェント一覧にない)ので、general-purpose に evaluator.md を読ませて代役にした。第 1 周: 要修正(中 1、低 2。すべて対応)、第 2 周: 合格。指摘 4(セッションを盗まれた場合、新しいログインなしで Google を紐づけられる)は、その後、人の判断で対策を入れた(下の「セッションを盗まれた場合の対策」)。この対策は、評価者のレビューをまだ受けていない
+  - セッションを盗まれた場合の対策(人の判断で追加): (1) 紐づけにも新しいログイン(10 分以内)を要求する(hooks.before、session.freshAge を 10 分に)。(2) 紐づけたら、root のメールに通知する(databaseHooks.account.create.after)。テストは google-auth.test.ts に 6 件追加(古いセッションでは紐づけ・解除できない、入り直せば紐づけられる、通知の宛先と失敗時の挙動)。設定を壊すと落ちることを確認済み(通知の握りつぶしの try/catch だけは、Better Auth 側が元から守っているので、外しても落ちない)
+- Vitest のテスト(84 件。ロジックと、Google ログインの方針)
 - evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
 - hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの ESLint、応答終了時の tsc・lint・test。evaluator はビルド確認とレビューだけ担当
 
 ## 実行中のタスク
-- プロフィール編集の PR を出す(api の PUT /me/profile の PR を先にマージする)
+- コミットの直前。手動確認と自動検証は完了している。次の 2 つを待っている(どちらも人間の作業)
+  - 別の窓(別のセッション)でのレビュー
+  - ユーザーが、自分でコードをレビューすること
+- レビューが済んだら、コミットと PR(頼まれるまでコミットしない)。コミットの案: 機能とテスト、文書(CLAUDE.md、このファイル)の 2 つに分ける
+- 人間の確認待ち(新しく足した分。実機が要る): (a) ログインから 10 分以上たったセッションで「Link Google」を押すと、「sign out from the home page…」の案内が出て、紐づけが始まらない。(b) 入り直した直後なら、紐づけられる。(c) 紐づけたあと、root のメールアドレス宛に通知が届く(開発では EMAIL_TRANSPORT=console なので、npm run dev のターミナルに出る)。(d) 解除も、10 分以上たつと断られる
+- 評価者(別の窓でのレビュー)に、セッションを盗まれた場合の対策の部分を見てもらう(まだレビューを受けていない)
 
 ## これからのタスク(順番)
-1. OAuth を有効にする(マジックリンクは必須のまま、OAuth は任意)
-2. 1 回デプロイする(公開前チェックリストを先に片付ける。CLAUDE.md 参照)
-3. タグを付ける
+1. 上のレビュー → コミット → PR → マージ
+2. main にタグ v0.1.0 を付ける(web と api の両方。api は main の 5ef4b21)。Google ログインが入った後の v0.2.0 が、single-db の分岐点
+3. 1 回デプロイする(公開前チェックリストを先に片付ける。CLAUDE.md 参照)
 4. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
    - 別のオリジンになるので、trustedOrigins の設定が要る
 
-## PR に含める変更(feature/profile-edit-form)
-- /profile の閲覧と編集の分割、プロフィール編集(actions.ts、profile-form.ts、components/profile-form.tsx、テスト)
-- evaluator.md、CLAUDE.md の更新、.claude/settings.json と .claude/hooks/ の追加
+## 未コミットの変更(feature/oauth-google)
+- src/lib/google-oauth.ts、src/lib/oauth-errors.ts、src/lib/linked-accounts.ts と、それぞれのテスト
+- src/lib/google-auth-options.ts(ログインの方針)と、src/lib/google-auth.test.ts(方針の挙動テスト 7 件)
+- src/components/link-google-button.tsx、src/components/unlink-google-button.tsx
+- src/lib/auth.ts、src/app/login/page.tsx、src/app/profile/page.tsx、src/components/login-form.tsx、src/app/globals.css
+- .env.example、CLAUDE.md、claude-progress.txt

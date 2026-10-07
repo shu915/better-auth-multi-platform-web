@@ -21,6 +21,18 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - `/profile`(Server Component、閲覧のみ): email と name は自分のセッションから、bio は Go の `GET /me/profile` から取って表示し、Edit ボタンで `/profile/edit` に移る。JWT は `callApi` が発行する(ブラウザには出さない)。API が落ちていても、email と name は表示し、bio の欄にだけエラーを出す
 - `/profile/edit`(Server Component): name と bio の編集フォーム(`src/components/profile-form.tsx`)と Cancel リンク(`/profile` に戻る)。API が落ちていても、name は保存できる(bio 欄は出さないので、空で上書きされない)。保存後は、失敗したフィールドがなければ `/profile` に移り、一部でも失敗したら `/profile/edit` に残してフィールドごとに結果を出す(判定は `shouldLeaveEditPage`)
 - プロフィールの保存: Server Action `updateProfile`(`src/app/profile/actions.ts`)が、セッションを確認し、変更したフィールドだけを書く。name は Better Auth の `updateUser`(Web の DB)、bio は `callApi` で Go の `PUT /me/profile`。2 つの DB にまたがるのでトランザクションはなく、書き込みは独立に実行して結果をフィールドごとに表示する(どちらも冪等なので、再送すれば直る)。検証と書き込みのロジックは `src/lib/profile-form.ts`(単体テストあり)
+- ログインの設計: ユーザーはマジックリンクで作られる(これが root。ユーザー ID = JWT の `sub` がここで決まる)。Google などは、ログイン済みのユーザーが後から足す**任意のログイン手段**で、ユーザーを新しく作ることはできない
+- Google ログイン(任意): `GOOGLE_CLIENT_ID` と `GOOGLE_CLIENT_SECRET` を**両方**設定すると有効になる(未設定なら無効で、マジックリンクだけ。片方だけだと起動時にエラー。判定は `src/lib/google-oauth.ts` の `resolveGoogleCredentials`)。Google Cloud Console の承認済みリダイレクト URI は `<BETTER_AUTH_URL>/api/auth/callback/google`
+  - ログインの方針は `src/lib/google-auth-options.ts` の `googleAuthOptions` にあり、`auth.ts` が使う: `google.disableSignUp: true`(Google では新規登録できない)、`accountLinking.disableImplicitLinking: true`(同じメールでも自動では紐づけない)、`allowDifferentEmails: true`(Google のメールが root と違ってもよい。紐づけにはログイン中のセッションが要る。Better Auth は、セッションなしで紐づけられる経路があるとアカウント乗っ取りになりうると警告している)、`allowUnlinkingAll: true`
+  - 方針のテスト: `src/lib/google-auth.test.ts` が、本物の Better Auth をメモリ上の DB(`better-auth/adapters/memory`)で動かし、Google のトークン交換(`fetch`)だけを偽物にして、新規登録できない、未紐づけは(同じメールでも)入れない、紐づけると同じユーザーで入れる、解除すると入れない、他人に紐づいた Google は紐づけられない、セッションなしでは紐づけを始められない、を確かめる。設定を壊すと落ちることを確認済み。画面と、実際の Google との往復は対象外
+  - セッションを盗まれた場合の対策(`google-auth-options.ts`): セッションを盗んだ人が自分の Google を紐づけると、盗んだセッションが切れた後も入れてしまう。そこで、(1) 紐づけ(`/link-social`)にも、解除と同じ「新しいログイン」を要求する。`hooks.before` で、ログインから `FRESH_SESSION_SECONDS`(10 分。Better Auth の既定は 1 日)を過ぎていたら `SESSION_NOT_FRESH`(403)で断る。この値は、新しさを求める他の操作にも効く。(2) 紐づけの行ができたら(`databaseHooks.account.create.after`)、Google のメールではなく、**root のメールアドレス**に知らせる(`src/lib/linked-accounts.ts` の `linkedAccountEmail`。送信は `auth.ts` の `notifyLinked`。失敗しても紐づけは成功する)。画面は、断られたときに「ホームでサインアウト → メールリンクで入り直す → もう一度」と案内する
+  - 残る弱点: 10 分以内に盗まれたセッションは、紐づけられてしまう。メールの通知で気づくのが、最後の手段。さらに強くするなら、紐づけの前に、root のメールへ確認リンクを送る方式がある(未実装)
+  - 紐づけ: `/profile` の「Other ways to sign in」で、ログイン済みのユーザーが「Link Google」(`authClient.linkSocial`、`src/components/link-google-button.tsx`)。紐づけ済みなら「Google: linked」と出る。有効なときだけ表示する(`googleEnabled`)
+  - ログイン: `/login` の「Continue with Google」は、紐づけ済みの Google アカウントだけが入れる。未紐づけだと `/login?error=...` に戻り、`src/lib/oauth-errors.ts` の `oauthErrorMessage` が既知のコード(`signup_disabled`、`account_not_linked` など)だけ文言に変える(未知のコードは汎用の文言で、クエリをそのまま出さない)
+  - 紐づけたユーザーでログインすれば、`sub` は root のままなので、Go の `profiles` はそのまま使える。Go は変えない
+  - 解除: 紐づけ済みなら、`/profile` の「Google: linked」の横に「Unlink Google」(`authClient.unlinkAccount`、`src/components/unlink-google-button.tsx`)。マジックリンクは常に使えて、`account` の行がなくても困らないので、`allowUnlinkingAll: true` にしてある(これがないと、最後の 1 行は解除できない)。解除にも、紐づけと同じく最近のログイン(10 分以内)が要る(`SESSION_NOT_FRESH` のときは、ログインし直すよう案内する。文言は `src/lib/linked-accounts.ts`)
+  - 1 人のユーザーに紐づく Google は、画面からは 1 つだけ(紐づけ済みなら「Link Google」を隠す)。1 つの Google アカウントを複数のユーザーに紐づけることは、Better Auth が止める
+  - 未対応: 他のプロバイダ(今は Google だけ)
 - メール送信: `EMAIL_TRANSPORT` で `resend`(Resend で送信)か `console`(ログ出力)を選ぶ。本番では必須、開発は未設定なら `console`(`src/lib/email.ts`)
 
 ## コマンド
@@ -79,7 +91,8 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - レート制限の保存先を DB にする(`rateLimit: { storage: "database" }`)
 - `pg` の Pool を `globalThis` にキャッシュし、`max` と `error` ハンドラを入れる
 - `trustedOrigins` を設定する(Tauri / Expo など、別のオリジンのクライアントを足すとき)
-- サインアップを制限するか決める(`disableSignUp`)
+- マジックリンクのサインアップを制限するか決める(`disableSignUp`)。今は、メールアドレスを知っていれば誰でも新規登録できる(Google では新規登録できない)
+- 本番の Google Cloud Console に、本番の URL のリダイレクト URI(`https://<本番のドメイン>/api/auth/callback/google`)を登録する
 - メール HTML の URL をエスケープする
 - Better Auth に `cookieCache` を入れるなら、`updateProfile` の `currentName: session.user.name`(セッションの名前との比較)をやめ、bio と同じく `initialName` の hidden 値と比べる(セッションが古い名前を返すと、A→B→A と戻した保存が「変更なし」と判定されて DB に書かれない)
 
