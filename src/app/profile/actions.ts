@@ -7,6 +7,8 @@ import { after } from "next/server";
 import { auth } from "@/lib/auth";
 import { callApi } from "@/lib/api-server";
 import { sendEmail } from "@/lib/email";
+import { tooManyRequestsMessage } from "@/lib/rate-limit";
+import { accountDeleteLimiter, profileUpdateLimiter } from "@/lib/rate-limits";
 import {
   accountDeletedEmail,
   deleteAccount,
@@ -18,6 +20,7 @@ import {
   parseProfileInput,
   saveProfile,
   shouldLeaveEditPage,
+  submittedValues,
   toFormState,
   type ProfileFormState,
 } from "@/lib/profile-form";
@@ -33,8 +36,21 @@ export async function updateProfile(
   const session = await auth.api.getSession({ headers: requestHeaders });
   if (!session) redirect("/login");
 
+  const submitted = submittedValues({ name: formData.get("name"), bio: formData.get("bio") });
+  const limit = profileUpdateLimiter.check(session.user.id);
+  if (!limit.allowed) {
+    return {
+      values: submitted,
+      errors: {},
+      saved: { name: false, bio: false },
+      formError: tooManyRequestsMessage(limit.retryAfterSeconds),
+    };
+  }
+
   const parsed = parseProfileInput({ name: formData.get("name"), bio: formData.get("bio") });
-  if (!parsed.ok) return { errors: parsed.errors, saved: { name: false, bio: false } };
+  if (!parsed.ok) {
+    return { values: submitted, errors: parsed.errors, saved: { name: false, bio: false } };
+  }
 
   // The bio the form was showing; only used to skip a write that would change nothing.
   const initialBio = formData.get("initialBio");
@@ -78,6 +94,9 @@ export async function deleteMyAccount(
   if (!session) redirect("/login");
 
   const userId = session.user.id;
+  const limit = accountDeleteLimiter.check(userId);
+  if (!limit.allowed) return { error: tooManyRequestsMessage(limit.retryAfterSeconds) };
+
   const confirmEmail = formData.get("confirmEmail");
   const result = await deleteAccount(
     {

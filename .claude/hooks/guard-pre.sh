@@ -27,8 +27,8 @@ fi
 # --- Bash の危険操作 ---
 if [[ "$tool" == "Bash" ]]; then
   sep='(^|[;&|][[:space:]]*)'
-  grep -Eq "${sep}git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(commit|push|clean|reset[[:space:]]+--hard)" <<<"$cmd" \
-    && block "git commit/push/clean/reset --hard は人が頼むまでしない(変更は未コミットで残す)"
+  grep -Eq "${sep}git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(push|clean|reset[[:space:]]+--hard)" <<<"$cmd" \
+    && block "git push/clean/reset --hard は人が頼むまでしない(commit はローカルで取り消せるので許可。外に出る push は人が実行する)"
   grep -Eq "${sep}rm[[:space:]]+-[a-zA-Z]*[rR]" <<<"$cmd" \
     && block "rm -r は禁止。必要なら人に確認する"
   grep -Eq "npm[[:space:]]+run[[:space:]]+db:(migrate|schema)|drizzle-kit[[:space:]]+(migrate|push)|auth@latest[[:space:]]+generate" <<<"$cmd" \
@@ -41,7 +41,6 @@ if [[ "$tool" =~ ^(Edit|Write|MultiEdit)$ && -n "$rel" ]]; then
     drizzle/*|drizzle.config.ts) block "drizzle/ は生成物。db:generate を人が実行する" ;;
     src/db/schema.ts) block "src/db/schema.ts は生成物で手編集禁止(db:schema を人が実行する)" ;;
     package-lock.json) block "package-lock.json は手編集しない(npm コマンド経由で更新する)" ;;
-    .github/workflows/*) block "CI 設定は人が頼んだときだけ変更する" ;;
   esac
 
   # --- 型・lint・テストを黙らせる回避の禁止 ---

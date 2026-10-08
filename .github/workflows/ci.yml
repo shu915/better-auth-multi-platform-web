@@ -11,7 +11,24 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      # For auth-postgres.test.ts, which runs Better Auth against a real Postgres.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
+      # Throwaway CI database with a dummy password; not a secret. The tests make and drop their own schema.
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/app?sslmode=disable
       # Dummy values so the build can load modules; no real secrets or services are used.
       DATABASE_URL: postgres://user:pass@localhost:5432/db
       BETTER_AUTH_URL: http://localhost:3000
@@ -25,7 +42,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - name: test
+        run: |
+          set -o pipefail # so a failing npm test is not hidden by tee
+          npm test 2>&1 | tee test.log
+          # A skipped test means a safety net did not run (the DB tests skip without a database).
+          if grep -Eq '[0-9]+ skipped' test.log; then
+            echo "Some tests were skipped:"
+            grep -n skipped test.log
+            exit 1
+          fi
       - run: npx next typegen
       - run: npx tsc --noEmit
       - run: npm run build

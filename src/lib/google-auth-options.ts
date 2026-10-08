@@ -9,11 +9,44 @@ import type { GoogleCredentials } from "@/lib/google-oauth";
 // the email, say) gets this 5 minutes too.
 export const FRESH_SESSION_SECONDS = 5 * 60;
 
+// Better Auth's rate limiter, per client IP. It is on in production by default (off in
+// development) and keeps its counts in this server's memory. The magic link already has its own
+// rule (5 per minute, from the plugin). These add the actions that change an account. Deleting
+// the account and updating the profile are refused over HTTP altogether (see below).
+// Calls to auth.api.* from our own server code are not counted: the Server Actions that make them
+// have their own limits (rate-limits.ts).
+export const AUTH_RATE_LIMIT_RULES = {
+  "/link-social": { window: 60, max: 5 },
+  "/unlink-account": { window: 60, max: 5 },
+  "/sign-in/social": { window: 60, max: 10 },
+} as const;
+
 export type LinkedNotice = { to: string; provider: string };
 
-// Linking needs a recent sign-in, like unlinking already does. No session at all is left to
-// the endpoint's own check, which answers 401.
-const requireFreshSessionToLink = createAuthMiddleware(async (ctx) => {
+// Deleting the account and changing the profile have rules that live in our Server Actions: the
+// typed-email check, the Go API data, the notice email, the field validation. Better Auth also
+// serves these two endpoints over HTTP (/api/auth/delete-user and /update-user), where none of
+// those rules apply, so a session cookie alone could delete the user and skip them all. Over HTTP
+// they are refused. The Server Actions call auth.api.* from our own server code, which has no
+// incoming request, and keep working. The browser client never calls these.
+// /token is on the list for a different reason: it hands out the JWT for the Go API to anyone with
+// the session cookie, but the JWT is meant to stay on our server (callApi issues it per call). A
+// stolen session or a script on the page could otherwise take a JWT and call the Go API directly,
+// without the fresh-login check that the account actions need. /jwks (the public keys the Go
+// API fetches) stays public. When a desktop or mobile client has to call the Go API directly,
+// this is the rule to revisit.
+const SERVER_ONLY_PATHS = new Set(["/delete-user", "/update-user", "/token"]);
+
+// Runs before every Better Auth endpoint. Two jobs: refuse the server-only endpoints over HTTP,
+// and make linking need a recent sign-in, like unlinking already does. No session at all is left
+// to the endpoint's own check, which answers 401.
+const guardAccountEndpoints = createAuthMiddleware(async (ctx) => {
+  if (SERVER_ONLY_PATHS.has(ctx.path) && ctx.request !== undefined) {
+    throw APIError.from("FORBIDDEN", {
+      message: "This action is not available over HTTP",
+      code: "SERVER_ONLY",
+    });
+  }
   if (ctx.path !== "/link-social") return;
   const session = await getSessionFromCtx(ctx);
   if (!session?.session) return;
@@ -60,8 +93,9 @@ export function googleAuthOptions(
     // with the user. Without a password or a verification mail, it asks for a fresh session,
     // which is the same freshAge as linking.
     user: { deleteUser: { enabled: true } },
+    rateLimit: { customRules: AUTH_RATE_LIMIT_RULES },
     session: { freshAge: FRESH_SESSION_SECONDS },
-    hooks: { before: requireFreshSessionToLink },
+    hooks: { before: guardAccountEndpoints },
     databaseHooks: {
       account: {
         create: {
