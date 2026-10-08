@@ -1,9 +1,13 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
+import { auth, googleEnabled } from "@/lib/auth";
 import { getMyProfile } from "@/lib/api-server";
 import type { Profile } from "@/lib/api";
+import { oauthErrorMessage } from "@/lib/oauth-errors";
+import { findLinkedAccountId } from "@/lib/linked-accounts";
+import { LinkGoogleButton } from "@/components/link-google-button";
+import { UnlinkGoogleButton } from "@/components/unlink-google-button";
 
 // The email and name come from our own session; the bio lives in the Go API.
 async function loadBio(): Promise<Profile | null> {
@@ -15,14 +19,47 @@ async function loadBio(): Promise<Profile | null> {
   }
 }
 
-export default async function ProfilePage() {
-  const session = await auth.api.getSession({ headers: await headers() });
+type GoogleLink =
+  | { status: "disabled" }
+  | { status: "unknown" }
+  | { status: "none" }
+  | { status: "linked"; accountId: string };
+
+// "unknown" means we could not tell, so the page shows neither the link nor the unlink button
+// instead of guessing.
+async function loadGoogleLink(requestHeaders: Headers): Promise<GoogleLink> {
+  try {
+    const accounts = await auth.api.listUserAccounts({ headers: requestHeaders });
+    const accountId = findLinkedAccountId(accounts, "google");
+    return accountId ? { status: "linked", accountId } : { status: "none" };
+  } catch (err) {
+    console.error("[profile] failed to list linked accounts", err);
+    return { status: "unknown" };
+  }
+}
+
+export default async function ProfilePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const requestHeaders = await headers();
+  const session = await auth.api.getSession({ headers: requestHeaders });
   if (!session) redirect("/login");
 
-  const profile = await loadBio();
+  // Independent of each other, and both swallow their own errors, so they can run together.
+  const [profile, googleLink] = await Promise.all([
+    loadBio(),
+    googleEnabled
+      ? loadGoogleLink(requestHeaders)
+      : Promise.resolve<GoogleLink>({ status: "disabled" }),
+  ]);
+  const { error } = await searchParams;
+  const linkError = oauthErrorMessage(typeof error === "string" ? error : undefined);
 
   return (
-    <main className="flex flex-1 items-center justify-center px-4">
+    // Top-aligned, not centered: errors that appear below must not shift the page.
+    <main className="flex flex-1 items-start justify-center px-4 pt-24">
       <div className="w-full max-w-sm space-y-6">
         <h1 className="text-2xl font-semibold">Profile</h1>
         <dl className="space-y-4">
@@ -60,6 +97,30 @@ export default async function ProfilePage() {
             Back
           </Link>
         </div>
+        {/* Last on purpose: the link and unlink buttons show errors below themselves, and
+            nothing else should move when they do. */}
+        {googleEnabled && (
+          <section className="space-y-2">
+            <h2 className="text-sm text-zinc-600 dark:text-zinc-400">Other ways to sign in</h2>
+            {googleLink.status === "linked" && (
+              <div className="flex items-center gap-4">
+                <p className="text-sm">Google: linked</p>
+                <UnlinkGoogleButton accountId={googleLink.accountId} />
+              </div>
+            )}
+            {googleLink.status === "none" && <LinkGoogleButton />}
+            {googleLink.status === "unknown" && (
+              <p role="alert" className="text-sm text-red-600">
+                Could not load your linked accounts. Reload to try again.
+              </p>
+            )}
+            {linkError && (
+              <p role="alert" className="text-sm text-red-600">
+                {linkError}
+              </p>
+            )}
+          </section>
+        )}
       </div>
     </main>
   );

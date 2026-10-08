@@ -4,6 +4,9 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { jwt, magicLink } from "better-auth/plugins";
 import { db } from "@/lib/db";
 import { sendEmail } from "@/lib/email";
+import { googleAuthOptions } from "@/lib/google-auth-options";
+import { resolveGoogleCredentials } from "@/lib/google-oauth";
+import { linkedAccountEmail } from "@/lib/linked-accounts";
 import * as schema from "@/db/schema";
 
 const baseURL =
@@ -14,9 +17,32 @@ if (!baseURL) throw new Error("BETTER_AUTH_URL is required in production");
 // Must match the audience the Go API verifies.
 const audience = process.env.JWT_AUDIENCE ?? "better-auth-multi-platform-api";
 
+// The user is created by the magic link (the root identity). Google is an optional extra way to
+// sign in that a signed-in user links from /profile; it can never create a user. It is on only
+// when both env vars are set.
+const google = resolveGoogleCredentials({
+  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
+});
+export const googleEnabled = google !== null;
+
 export const auth = betterAuth({
   baseURL,
   database: drizzleAdapter(db, { provider: "pg", schema }),
+  // The sign-in policy lives in googleAuthOptions so the tests run the same options.
+  ...googleAuthOptions(google, {
+    notifyLinked: async ({ to, provider }) => {
+      const { subject, text, html } = linkedAccountEmail(provider, new Date());
+      // Not awaited, like the magic link: the link itself must not wait for (or fail on) mail.
+      after(async () => {
+        try {
+          await sendEmail({ to, subject, text, html });
+        } catch (err) {
+          console.error("[email] failed to send the linked-account notice", err);
+        }
+      });
+    },
+  }),
   plugins: [
     magicLink({
       sendMagicLink: async ({ email, url }) => {
