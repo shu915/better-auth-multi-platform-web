@@ -92,6 +92,13 @@ describe("apiRequest", () => {
     await expect(apiRequest("/me", "t", { baseURL, fetch })).rejects.toThrow();
   });
 
+  it("treats 204 No Content as success without reading a body", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(
+      apiRequest<void>("/me", "t", { method: "DELETE", baseURL, fetch }),
+    ).resolves.toBeUndefined();
+  });
+
   it("uses API_BASE_URL when no baseURL is given", async () => {
     vi.stubEnv("API_BASE_URL", "http://from-env.test");
     const fetch = fakeFetch({});

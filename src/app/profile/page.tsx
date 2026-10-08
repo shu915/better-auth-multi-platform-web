@@ -7,6 +7,7 @@ import type { Profile } from "@/lib/api";
 import { oauthErrorMessage } from "@/lib/oauth-errors";
 import { findLinkedAccountId } from "@/lib/linked-accounts";
 import { LinkGoogleButton } from "@/components/link-google-button";
+import { DeleteAccountForm } from "@/components/delete-account-form";
 import { UnlinkGoogleButton } from "@/components/unlink-google-button";
 
 // The email and name come from our own session; the bio lives in the Go API.
@@ -121,6 +122,13 @@ export default async function ProfilePage({
             )}
           </section>
         )}
+        <section className="space-y-2">
+          <h2 className="text-sm text-zinc-600 dark:text-zinc-400">Delete account</h2>
+          <p className="text-sm">
+            Deletes your profile and your account, including any linked Google sign-in.
+          </p>
+          <DeleteAccountForm email={session.user.email} />
+        </section>
       </div>
     </main>
   );
