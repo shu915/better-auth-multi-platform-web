@@ -69,6 +69,11 @@ export function ProfileForm({ name, bio }: { name: string; bio: string | null })
       >
         {pending ? "Saving..." : "Save"}
       </button>
+      {state.formError && (
+        <p role="alert" className="text-sm text-red-600">
+          {state.formError}
+        </p>
+      )}
     </form>
   );
 }

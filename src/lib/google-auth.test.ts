@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
-import { magicLink } from "better-auth/plugins";
+import { jwt, magicLink } from "better-auth/plugins";
 import {
   FRESH_SESSION_SECONDS,
   googleAuthOptions,
@@ -70,24 +70,32 @@ function mergeCookies(...parts: string[]): string {
 
 function createTestAuth(
   notify: (notice: LinkedNotice) => Promise<void> = async () => {},
+  { rateLimit = false }: { rateLimit?: boolean } = {},
 ) {
   const notifyLinked = vi.fn(notify);
+  const options = googleAuthOptions(
+    { clientId: "client-id", clientSecret: "client-secret" },
+    { notifyLinked },
+  );
   const tokens = new Map<string, string>();
   const auth = betterAuth({
     baseURL: BASE,
     secret: "test-secret-test-secret-test-secret-123456",
-    database: memoryAdapter({ user: [], session: [], account: [], verification: [] }),
+    database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [] }),
     plugins: [
       magicLink({
         sendMagicLink: async ({ email, token }) => {
           tokens.set(email, token);
         },
       }),
+      // Same shape as auth.ts, so the /token and /jwks endpoints can be tested.
+      jwt({
+        jwt: { issuer: BASE, audience: "api.test", expirationTime: "5m", definePayload: () => ({}) },
+      }),
     ],
-    ...googleAuthOptions(
-      { clientId: "client-id", clientSecret: "client-secret" },
-      { notifyLinked },
-    ),
+    ...options,
+    // The rules are the real ones from googleAuthOptions; only the production-only switch is on.
+    ...(rateLimit && { rateLimit: { ...options.rateLimit, enabled: true } }),
   });
 
   // Signs the email in through the real magic link flow, which creates the user. Returns the
@@ -401,5 +409,133 @@ describe("Google sign-in policy", () => {
         t.auth.api.deleteUser({ headers: new Headers(), body: {} }),
       ).rejects.toMatchObject({ status: "UNAUTHORIZED" });
     });
+  });
+});
+
+describe("rate limits on the auth endpoints", () => {
+  const ip = { "x-forwarded-for": "203.0.113.7" };
+
+  async function post(t: ReturnType<typeof createTestAuth>, path: string, cookie = "") {
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: BASE, cookie, ...ip },
+        body: JSON.stringify({}),
+      }),
+    );
+    return res.status;
+  }
+
+  it("limits the other account actions too", async () => {
+    for (const [path, max] of [
+      ["unlink-account", 5],
+      ["link-social", 5],
+      ["sign-in/social", 10],
+    ] as const) {
+      const t = createTestAuth(undefined, { rateLimit: true });
+      const statuses = [];
+      for (let i = 0; i < max + 1; i++) statuses.push(await post(t, path));
+      expect(statuses.slice(0, max), path).not.toContain(429);
+      expect(statuses[max], path).toBe(429);
+    }
+  });
+
+  it("keeps the magic link limit: the sixth request in a minute gets 429", async () => {
+    const t = createTestAuth(undefined, { rateLimit: true });
+    const statuses = [];
+    for (let i = 0; i < 6; i++) {
+      const res = await t.auth.handler(
+        new Request(`${BASE}/api/auth/sign-in/magic-link`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: BASE, ...ip },
+          body: JSON.stringify({ email: "root@example.com" }),
+        }),
+      );
+      statuses.push(res.status);
+    }
+    expect(statuses.slice(0, 5)).not.toContain(429);
+    expect(statuses[5]).toBe(429);
+  });
+
+  it("does not limit when the switch is off (development)", async () => {
+    const t = createTestAuth();
+    const statuses = [];
+    for (let i = 0; i < 12; i++) statuses.push(await post(t, "sign-in/social"));
+    expect(statuses).not.toContain(429);
+  });
+});
+
+describe("endpoints that only our Server Actions may call", () => {
+  async function http(t: ReturnType<typeof createTestAuth>, path: string, cookie: string, body: object) {
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: BASE, cookie },
+        body: JSON.stringify(body),
+      }),
+    );
+    return { status: res.status, body: await res.text() };
+  }
+
+  it("refuses to delete the account over HTTP, even with a fresh session", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const res = await http(t, "delete-user", cookie, {});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toContain("SERVER_ONLY");
+    expect(await t.userByEmail("root@example.com")).not.toBeNull();
+    expect(await t.sessionUserId(cookie)).toBeDefined();
+  });
+
+  it("refuses to update the user over HTTP, so the name rules cannot be skipped", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const res = await http(t, "update-user", cookie, { name: "x".repeat(100_000) });
+
+    expect(res.status).toBe(403);
+    const user = await t.userByEmail("root@example.com");
+    expect(user?.user.name.length ?? 0).toBeLessThan(100);
+  });
+
+  it("does not hand a JWT to the browser: GET /token is refused over HTTP", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/token`, { headers: { cookie, origin: BASE } }),
+    );
+    const text = await res.text();
+
+    expect(res.status).toBe(403);
+    expect(text).toContain("SERVER_ONLY");
+    expect(text).not.toMatch(/eyJ/); // a JWT starts with this
+  });
+
+  it("still issues the JWT to our own server code, and still serves the public keys over HTTP", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const { token } = await t.auth.api.getToken({ headers: new Headers({ cookie }) });
+    expect(token.split(".")).toHaveLength(3);
+
+    // The Go API fetches these over HTTP, so they must stay public.
+    const jwks = await t.auth.handler(new Request(`${BASE}/api/auth/jwks`));
+    expect(jwks.status).toBe(200);
+    expect((await jwks.json()).keys.length).toBeGreaterThan(0);
+  });
+
+  it("still lets our own server code update and delete (the Server Actions do)", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    const headers = new Headers({ cookie });
+
+    await t.auth.api.updateUser({ headers, body: { name: "Alice" } });
+    expect((await t.userByEmail("root@example.com"))?.user.name).toBe("Alice");
+
+    await t.auth.api.deleteUser({ headers, body: {} });
+    expect(await t.userByEmail("root@example.com")).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ import {
   parseProfileInput,
   saveProfile,
   shouldLeaveEditPage,
+  submittedValues,
   toFormState,
   type ProfileWriters,
 } from "@/lib/profile-form";
@@ -249,5 +250,26 @@ describe("shouldLeaveEditPage", () => {
     ["both failed", { name: "failed", bio: "failed" }, false],
   ])("%s", (_label, result, expected) => {
     expect(shouldLeaveEditPage(result)).toBe(expected);
+  });
+});
+
+describe("submittedValues", () => {
+  it("returns what was typed, untrimmed, so a rejected submit does not lose it", () => {
+    expect(submittedValues({ name: "  Alice  ", bio: "a".repeat(1001) })).toEqual({
+      name: "  Alice  ",
+      bio: "a".repeat(1001),
+    });
+  });
+
+  it("counts a browser's CRLF line breaks as one, like the rest of the form", () => {
+    expect(submittedValues({ name: "A", bio: "one\r\ntwo" }).bio).toBe("one\ntwo");
+  });
+
+  it("keeps a field that was not in the form as null (bio, when the API was down)", () => {
+    expect(submittedValues({ name: "A", bio: null })).toEqual({ name: "A", bio: null });
+  });
+
+  it("falls back to empty for a value that is not text", () => {
+    expect(submittedValues({ name: 5, bio: {} })).toEqual({ name: "", bio: null });
   });
 });

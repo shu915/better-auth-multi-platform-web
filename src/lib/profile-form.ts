@@ -113,7 +113,22 @@ export type ProfileFormState = {
   values?: { name: string; bio: string | null };
   errors: FieldErrors;
   saved: Record<FieldName, boolean>;
+  /** A problem with the whole submit, not one field (for example, too many requests). */
+  formError?: string;
 };
+
+/**
+ * What the user typed, as the form should show it again after a rejected submit (a validation
+ * error or too many requests). React resets uncontrolled fields after an action, so without this
+ * a long bio that was one character too long would be replaced by the old text. Nothing is
+ * trimmed or cut here; a field that was not in the form (bio, when the API was down) stays null.
+ */
+export function submittedValues(raw: { name: unknown; bio: unknown }): { name: string; bio: string | null } {
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    bio: typeof raw.bio === "string" ? normalizeNewlines(raw.bio) : null,
+  };
+}
 
 export const initialProfileFormState: ProfileFormState = {
   errors: {},

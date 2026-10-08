@@ -33,7 +33,8 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
   - 解除: 紐づけ済みなら、`/profile` の「Google: linked」の横に「Unlink Google」(`authClient.unlinkAccount`、`src/components/unlink-google-button.tsx`)。マジックリンクは常に使えて、`account` の行がなくても困らないので、`allowUnlinkingAll: true` にしてある(これがないと、最後の 1 行は解除できない)。解除にも、紐づけと同じく最近のログイン(5 分以内)が要る(`SESSION_NOT_FRESH` のときは、ログインし直すよう案内する。文言は `src/lib/linked-accounts.ts`)
   - 1 人のユーザーに紐づく Google は、画面からは 1 つだけ(紐づけ済みなら「Link Google」を隠す)。1 つの Google アカウントを複数のユーザーに紐づけることは、Better Auth が止める
   - 未対応: 他のプロバイダ(今は Google だけ)
-- 退会(`/profile` の「Delete account」、`src/components/delete-account-form.tsx`): Server Action `deleteMyAccount`(`src/app/profile/actions.ts`)が `src/lib/delete-account.ts` の `deleteAccount` を呼ぶ。順序は (1) `revokeOtherSessions`(新しい JWT が出なくなる)→ (2) Go の `DELETE /me`(冪等、204)→ (3) Better Auth の `deleteUser`(user を消すと、session と account=Google の紐づけも DB の外部キー cascade と Better Auth で消える)。どこかで失敗したらそこで止まり、ユーザーは残る。再送すれば全部やり直せる。成功したら、root のメールに「退会した」通知を送る(`notifyDeleted`。宛先は `deleteAccount` がセッションのメールに決める。入力した確認用メールではない。送信は `after()` で非同期、失敗しても退会は成功のまま。盗まれたセッションでの退会に本人が気づくため)。入力した確認用メールが一致しないと何も呼ばない。`deleteUser` は新しいログイン(`FRESH_SESSION_SECONDS`、5 分)を要求するが、Go のデータを消した後に断られると「データのないアカウント」が残るので、`deleteAccount` が最初に鮮度を確かめる。`user.deleteUser.enabled` は `google-auth-options.ts` にあり、`google-auth.test.ts` の「account deletion」が守る(無効にすると落ちることを確認済み)。Cookie を消すため `auth.ts` の plugins の最後に `nextCookies()` を入れてある。`apiRequest` は 204 を本文なしの成功として扱う
+- 退会(`/profile` の「Delete account」、`src/components/delete-account-form.tsx`): Server Action `deleteMyAccount`(`src/app/profile/actions.ts`)が `src/lib/delete-account.ts` の `deleteAccount` を呼ぶ。順序は (1) `revokeOtherSessions`(新しい JWT が出なくなる)→ (2) Go の `DELETE /me`(冪等、204)→ (3) Better Auth の `deleteUser`(user を消すと、session と account=Google の紐づけも DB の外部キー cascade と Better Auth で消える)。どこかで失敗したらそこで止まり、ユーザーは残る。再送すれば全部やり直せる。成功したら、root のメールに「退会した」通知を送る(`notifyDeleted`。宛先は `deleteAccount` がセッションのメールに決める。入力した確認用メールではない。送信は `after()` で非同期、失敗しても退会は成功のまま。盗まれたセッションでの退会に本人が気づくため)。入力した確認用メールが一致しないと何も呼ばない。`deleteUser` は新しいログイン(`FRESH_SESSION_SECONDS`、5 分)を要求するが、Go のデータを消した後に断られると「データのないアカウント」が残るので、`deleteAccount` が最初に鮮度を確かめる。**退会とプロフィール更新は、HTTP 経由では拒否する。** Better Auth は `/api/auth/delete-user` と `/api/auth/update-user` も公開するが、確認用メール・Go のデータ削除・通知・名前の検証は Server Action にしかないため、Cookie だけで素通りできてしまう(実際に再現した)。`google-auth-options.ts` の `hooks.before` が、受信リクエストのある呼び出し(HTTP)だけ 403 `SERVER_ONLY` で断る。Server Action の `auth.api.*` はリクエストがないので通る。ブラウザ側のコードはこの 2 つを呼ばない。**`/api/auth/token`(JWT を返す)も同じ理由で HTTP 経由は拒否する**(Cookie だけで JWT を取れると、盗まれたセッションや画面上のスクリプトが、5 分の新しいログインの確認を通らずに Go の `DELETE /me` などを直接呼べるため)。`callApi` はサーバー内の `auth.api.getToken` を使うので影響しない。公開鍵の `/api/auth/jwks` は、Go が取りに来るので公開のまま。デスクトップやモバイルが Go を直接呼ぶ構成にするときは、このルールを見直す(専用のエンドポイントにする、など)。`sendDeleteAccountVerification` や `changeEmail` を有効にするときも、ここのガードとテスト(`/delete-user/callback` など)を見直す`user.deleteUser.enabled` は `google-auth-options.ts` にあり、`google-auth.test.ts` の「account deletion」が守る(無効にすると落ちることを確認済み)。Cookie を消すため `auth.ts` の plugins の最後に `nextCookies()` を入れてある。`apiRequest` は 204 を本文なしの成功として扱う
+  - 退会後に残るもの(`deleteUser` が消すのは user、session、account だけ。Better Auth のソースで確認): `jwks` は全ユーザー共通の署名鍵で、個人のデータではない(消してはいけない)。`verification` には、まだ使っていないマジックリンクの行が残りうる(`value` に email が入る)。リンクの有効期限は既定で 5 分なので、退会後に残るのは最大 5 分分で、期限が切れたら無効になる。期限切れの行を定期的に掃除するのは、デプロイ時の運用(未実装)
 - メール送信: `EMAIL_TRANSPORT` で `resend`(Resend で送信)か `console`(ログ出力)を選ぶ。本番では必須、開発は未設定なら `console`(`src/lib/email.ts`)
 
 ## コマンド
@@ -43,7 +44,9 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - 型チェック: `npx next typegen && npx tsc --noEmit`。`LayoutProps` などのグローバル型は `next typegen` が `.next/types` に生成するので、`.next` を消した後は先に typegen が要る(CI と Stop hook も同じ順序)
 - `.next/` はビルド/dev のキャッシュ(gitignore 済み)。壊れたら消してよい
 - 依存を足したり更新したりして `package-lock.json` が変わったら、`@rolldown/binding-*` が 15 個残っているか確認する(`grep -c '"node_modules/@rolldown/binding-' package-lock.json`)。0 なら npm の不具合で消えており、`npm test` が `Cannot find native binding` で落ちる(CI の Linux でも同じ)。`rm -rf node_modules package-lock.json && npm install` で作り直す
-- `npm test`: テスト(Vitest。`src/**/*.test.ts`。ロジックだけを対象にし、画面と E2E はまだ対象外)
+- `npm test`: テスト(Vitest。`src/**/*.test.ts`。画面のテストは入れない方針。E2E は公開前に 1 本だけ入れるかを決める)
+  - `src/lib/auth-postgres.test.ts` は実 Postgres を使う。`TEST_DATABASE_URL` が要る(開発では `api/` で `docker compose up -d db` を起動しておけば、Stop hook が自動で渡す。CI は Postgres の service を立てる)。テストは専用のスキーマを作って、終わったら消す。**本物のデータが入った DB を指さない**こと(本番とは別のデータベースと別のロールを使う。プロセスが強制終了すると、`web_test_` で始まるスキーマが残ることがある)。未設定だと SKIP され、CI は SKIP があると失敗する
+  - `src/lib/api-http.test.ts` は本物の HTTP サーバー(Go の応答を真似る)に対して `apiRequest` を確かめる。`src/app/profile/actions.test.ts` は Server Action の結線
 - `npm run db:generate`: マイグレーションファイルを生成(`drizzle/`)
 - `npm run db:migrate`: マイグレーションを DB に適用(`DATABASE_URL_UNPOOLED` を使う)
 - `npm run db:studio`: DB の中身を見る(Drizzle Studio)
@@ -80,21 +83,26 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 テストが落ちたら、まず実装が間違っていると考える。テストの側が間違っていると判断するときも、その根拠を書く。
 
 ### コミットとマイグレーション
-- 人が頼むまでコミットしない(変更は未コミットで残し、先に読んでもらう)
+- 人が頼むまでコミットしない(変更は未コミットで残し、先に読んでもらう)。hook はコミットを止めない(運用で守る)。push は hook が止めるので、人が実行する。`.github/workflows/` の編集は hook では止めない。CI を緩める変更(テストの削除、SKIP を許す、など)は、改ざんとして扱い、PR の差分で見る
 - `npm run db:migrate` は実行しない。`npm run db:schema` で `src/db/schema.ts` を再生成するのも、頼まれたときだけにする(手順を案内する)
 - `.env` 系のファイルは読まない
 
 ### hooks が強制していること(`.claude/hooks/`)
-- PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git commit/push/clean/reset --hard`、`rm -r`、`db:migrate` / `db:schema` / `drizzle-kit migrate|push`、`drizzle/`・`src/db/schema.ts`・`package-lock.json`・`.github/workflows/` の編集、`@ts-ignore` / `eslint-disable` / `as unknown as` / `any` の追加、テストや設定への `skip` / `only` / `strict:false` / ルール `off` / `exclude`
+- PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git push/clean/reset --hard`(`git commit` はローカルで取り消せるのでブロックしない。コミットは頼まれたときだけ、という運用は変えない)、`rm -r`、`db:migrate` / `db:schema` / `drizzle-kit migrate|push`、`drizzle/`・`src/db/schema.ts`・`package-lock.json` の編集、`@ts-ignore` / `eslint-disable` / `as unknown as` / `any` の追加、テストや設定への `skip` / `only` / `strict:false` / ルール `off` / `exclude`
 - ブロックされたら回避せず、理由を報告して人の指示を待つ
 
 ## 公開前チェックリスト
-- レート制限の保存先を DB にする(`rateLimit: { storage: "database" }`)
+- レート制限(連打対策)は入っている。Better Auth のエンドポイントは `google-auth-options.ts` の `AUTH_RATE_LIMIT_RULES`(退会 10 分に 3 回、紐づけ・解除 1 分に 5 回、Google ログイン 1 分に 10 回。マジックリンクはプラグインの 1 分に 5 回)で、本番だけ有効(開発は無効)。Server Action(プロフィール保存は 1 分に 20 回、退会は 10 分に 5 回、ユーザー単位)は `src/lib/rate-limits.ts`。**どちらもサーバーのメモリに数える**ので、インスタンスが複数だったり、サーバーレスで毎回別のプロセスになったりすると、効きが弱い。そうなる構成にするなら、Better Auth は `rateLimit: { storage: "database" }`(スキーマ再生成が要る: `db:schema` → `db:generate` → `db:migrate`。人が実行する)にする。**デプロイ先が決まったら、必ず確認する(評価者の指摘):** Better Auth はクライアントの IP を `x-forwarded-for` から取る。`trustedProxies` がないと、この値が **1 つのときだけ**採用し、`client, proxy` のように複数あると IP が取れず、全員が同じ 1 つの枠を共有する(少数のリクエストでログインが止まる)。逆に、プロキシが `x-forwarded-for` を上書きしない構成では、偽装で制限を回避できる。デプロイ先に合わせて `auth.ts` の `advanced.ipAddress`(`ipAddressHeaders` か `trustedProxies`)を設定する。**未設定のままなので、単一のプロキシ(`x-forwarded-for` が 1 つ)を前提にしている**
 - `pg` の Pool を `globalThis` にキャッシュし、`max` と `error` ハンドラを入れる
 - `trustedOrigins` を設定する(Tauri / Expo など、別のオリジンのクライアントを足すとき)
 - マジックリンクのサインアップを制限するか決める(`disableSignUp`)。今は、メールアドレスを知っていれば誰でも新規登録できる(Google では新規登録できない)
 - 本番の Google Cloud Console に、本番の URL のリダイレクト URI(`https://<本番のドメイン>/api/auth/callback/google`)を登録する
 - メール HTML の URL をエスケープする
+- マジックリンクに、宛先メールごとの制限がない(Better Auth のレート制限は IP 単位)。複数の IP から同じ宛先へ送ると、他人の受信箱にメールを大量に送れる。`sendMagicLink` の中で宛先ごとに数えるか、メール送信側(Resend)の制限に頼るかを決める
+- セキュリティヘッダーに CSP と HSTS がない(HSTS はロードバランサや CDN でもよい)
+- `src/lib/db.ts` は本番で TLS を強制しない(Go 側は `RequireTLS` で強制)。`DATABASE_URL` に `sslmode=require` 以上が入っているか、起動時に検査する
+- CI の GitHub Actions がタグ指定(`@v7`)で、コミット SHA 固定ではない
+- Server Action の `allowedOrigins`:リバースプロキシの背後で、Server Action が Origin の不一致で断られないか確認する
 - Better Auth に `cookieCache` を入れるなら、`updateProfile` の `currentName: session.user.name`(セッションの名前との比較)をやめ、bio と同じく `initialName` の hidden 値と比べる(セッションが古い名前を返すと、A→B→A と戻した保存が「変更なし」と判定されて DB に書かれない)
 
 ## 進捗ファイル
