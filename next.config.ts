@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The end-to-end tests set this, so their dev server does not clash with yours (one dev server
+  // per output folder).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   async headers() {
     return [
       {
