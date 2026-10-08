@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { nextCookies } from "better-auth/next-js";
 import { jwt, magicLink } from "better-auth/plugins";
 import { db } from "@/lib/db";
 import { sendEmail } from "@/lib/email";
@@ -72,5 +73,7 @@ export const auth = betterAuth({
         definePayload: () => ({}),
       },
     }),
+    // Lets a Server Action (deleteAccount) clear the session cookie. Must stay last.
+    nextCookies(),
   ],
 });

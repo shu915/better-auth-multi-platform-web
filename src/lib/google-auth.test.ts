@@ -355,4 +355,51 @@ describe("Google sign-in policy", () => {
       }),
     ).rejects.toMatchObject({ status: "UNAUTHORIZED" });
   });
+
+  describe("account deletion", () => {
+    async function rowCounts(t: ReturnType<typeof createTestAuth>, email: string) {
+      const context = await t.auth.$context;
+      const found = await context.internalAdapter.findUserByEmail(email);
+      return found ? { user: 1 } : { user: 0 };
+    }
+
+    it("deletes the user and the linked Google account, and Google can no longer sign in", async () => {
+      const t = createTestAuth();
+      const sessionCookie = await t.signInWithMagicLink("root@example.com");
+      const identity = { sub: "g-del", email: "other@gmail.com" };
+      await t.googleCallback(identity, "link", sessionCookie);
+      const userId = await t.sessionUserId(sessionCookie);
+      if (!userId) throw new Error("no user");
+      const context = await t.auth.$context;
+      expect(await context.internalAdapter.findAccounts(userId)).toHaveLength(1);
+
+      await t.auth.api.deleteUser({ headers: new Headers({ cookie: sessionCookie }), body: {} });
+
+      expect(await rowCounts(t, "root@example.com")).toEqual({ user: 0 });
+      expect(await context.internalAdapter.findAccounts(userId)).toEqual([]);
+      expect(await t.sessionUserId(sessionCookie)).toBeUndefined();
+      const result = await t.googleCallback(identity, "signIn");
+      expect(result.error).toBe("signup_disabled");
+      expect(result.cookie).not.toContain("session_token");
+    });
+
+    it("refuses to delete with a session older than the fresh window", async () => {
+      const t = createTestAuth();
+      const sessionCookie = await t.signInWithMagicLink("root@example.com");
+      makeSessionsStale();
+
+      await expect(
+        t.auth.api.deleteUser({ headers: new Headers({ cookie: sessionCookie }), body: {} }),
+      // Better Auth answers 400 "Session expired" here, not the 403 our link hook uses.
+      ).rejects.toMatchObject({ status: "BAD_REQUEST" });
+      expect(await rowCounts(t, "root@example.com")).toEqual({ user: 1 });
+    });
+
+    it("refuses to delete without a session", async () => {
+      const t = createTestAuth();
+      await expect(
+        t.auth.api.deleteUser({ headers: new Headers(), body: {} }),
+      ).rejects.toMatchObject({ status: "UNAUTHORIZED" });
+    });
+  });
 });

@@ -6,8 +6,8 @@ import type { GoogleCredentials } from "@/lib/google-oauth";
 // the actions a stolen session would abuse (an attacker linking their own Google account keeps
 // access after the stolen session ends), so this is short, not Better Auth's 1 day default.
 // It is the session's freshAge, so any other operation that asks for a fresh session (changing
-// the email, say) gets this 10 minutes too.
-export const FRESH_SESSION_SECONDS = 10 * 60;
+// the email, say) gets this 5 minutes too.
+export const FRESH_SESSION_SECONDS = 5 * 60;
 
 export type LinkedNotice = { to: string; provider: string };
 
@@ -56,6 +56,10 @@ export function googleAuthOptions(
         allowUnlinkingAll: true,
       },
     },
+    // Account deletion. Better Auth removes the user's sessions and linked accounts (Google)
+    // with the user. Without a password or a verification mail, it asks for a fresh session,
+    // which is the same freshAge as linking.
+    user: { deleteUser: { enabled: true } },
     session: { freshAge: FRESH_SESSION_SECONDS },
     hooks: { before: requireFreshSessionToLink },
     databaseHooks: {
