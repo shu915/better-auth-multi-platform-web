@@ -24,6 +24,11 @@ run() { # run <name> <cmd...>
 run typegen npx --no-install next typegen
 run tsc npx --no-install tsc --noEmit
 run lint npm run lint --silent
+# 開発用 DB(api/ の docker compose の db)が起動していれば、実 DB を使うテスト(auth-postgres.test.ts)も動かす。
+# 未起動なら SKIP のまま。テストは専用のスキーマを作って後で消す。本物のデータが入った DB は指さないこと
+if [[ -z "${TEST_DATABASE_URL:-}" ]] && (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+  export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/app?sslmode=disable" # 開発用のダミーの値
+fi
 run test npm test --silent
 if ! git diff --quiet HEAD -- package-lock.json 2>/dev/null; then
   n=$(grep -c '"node_modules/@rolldown/binding-' package-lock.json)
