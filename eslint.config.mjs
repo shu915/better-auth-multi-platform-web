@@ -9,6 +9,10 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    // Generated output of the end-to-end run and of Playwright, not our code.
+    ".next-e2e/**",
+    "playwright-report/**",
+    "test-results/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

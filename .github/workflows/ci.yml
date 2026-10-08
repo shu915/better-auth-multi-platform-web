@@ -55,3 +55,64 @@ jobs:
       - run: npx next typegen
       - run: npx tsc --noEmit
       - run: npm run build
+
+  # End-to-end: a real browser, the web app, the Go API (built from the api repository's main
+  # branch) and Postgres. Kept as its own job so a slow or flaky browser run is visible without
+  # being mixed into the fast checks above.
+  e2e:
+    runs-on: ubuntu-latest
+    # A hung dev server or Go build should not wait for the 6 hour default.
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway CI database with a dummy password; not a secret. The run makes and drops its own e2e_* databases.
+      E2E_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      API_DIR: ${{ github.workspace }}/api
+      # Placeholders so the web app's modules can load; the run sets its own values for the real ones.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      BETTER_AUTH_URL: http://localhost:3100
+      BETTER_AUTH_SECRET: ci-only-secret-ci-only-secret-ci-only
+    steps:
+      # No token left in .git/config: npm ci and go run run other people's code after this.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # The latest main of the API. If the API repository becomes private, this needs a token.
+          repository: shu915/better-auth-multi-platform-api
+          path: api
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Keep the report when the run fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 3

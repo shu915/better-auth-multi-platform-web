@@ -44,13 +44,17 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - 型チェック: `npx next typegen && npx tsc --noEmit`。`LayoutProps` などのグローバル型は `next typegen` が `.next/types` に生成するので、`.next` を消した後は先に typegen が要る(CI と Stop hook も同じ順序)
 - `.next/` はビルド/dev のキャッシュ(gitignore 済み)。壊れたら消してよい
 - 依存を足したり更新したりして `package-lock.json` が変わったら、`@rolldown/binding-*` が 15 個残っているか確認する(`grep -c '"node_modules/@rolldown/binding-' package-lock.json`)。0 なら npm の不具合で消えており、`npm test` が `Cannot find native binding` で落ちる(CI の Linux でも同じ)。`rm -rf node_modules package-lock.json && npm install` で作り直す
-- `npm test`: テスト(Vitest。`src/**/*.test.ts`。画面のテストは入れない方針。E2E は公開前に 1 本だけ入れるかを決める)
+- `npm run test:e2e`: E2E(Playwright。画面から最後まで通す 1 本: マジックリンクでログイン → プロフィール編集 → 退会)。本物のブラウザ、Web(`next dev`、ポート 3100、出力先 `.next-e2e`)、Go(`go run`、ポート 8180)、Postgres を使う。自分の `npm run dev` は止めなくてよい。必要なもの: Postgres(`api/` で `docker compose up -d db`)、Go、`../api`(`API_DIR` で変更)、`npx playwright install chromium`(初回だけ)。実行のたびに `e2e_web` と `e2e_api` を作り直す(`e2e/prepare.mjs`)ので、**本物のデータが入った Postgres を `E2E_DATABASE_URL` に指さない**こと。マジックリンクは、`EMAIL_TRANSPORT=file`(本番では拒否される)で `e2e/.tmp/mail.jsonl` に書き出されたものをテストが読む。本物の Google は E2E に含めない(手動で確認する範囲)。**開発サーバー(`next dev`)で動かすので、本番ビルドだけで変わる挙動(Better Auth のレート制限、Cookie の Secure、`file` メール転送の拒否)は通らない**。ポート 3100 と 8180 が使用中だと起動に失敗する。`npx playwright test` を直接実行しない(DB の準備は `npm run test:e2e` の最初の手順)。CI では別ジョブ(`e2e`)で、api のリポジトリを checkout して動かす。`npm test`(Vitest)の対象にはならない
+- `npm test`: テスト(Vitest。`src/**/*.test.ts`。画面のテストは入れない方針。E2E は下の `npm run test:e2e`)
   - `src/lib/auth-postgres.test.ts` は実 Postgres を使う。`TEST_DATABASE_URL` が要る(開発では `api/` で `docker compose up -d db` を起動しておけば、Stop hook が自動で渡す。CI は Postgres の service を立てる)。テストは専用のスキーマを作って、終わったら消す。**本物のデータが入った DB を指さない**こと(本番とは別のデータベースと別のロールを使う。プロセスが強制終了すると、`web_test_` で始まるスキーマが残ることがある)。未設定だと SKIP され、CI は SKIP があると失敗する
   - `src/lib/api-http.test.ts` は本物の HTTP サーバー(Go の応答を真似る)に対して `apiRequest` を確かめる。`src/app/profile/actions.test.ts` は Server Action の結線
 - `npm run db:generate`: マイグレーションファイルを生成(`drizzle/`)
 - `npm run db:migrate`: マイグレーションを DB に適用(`DATABASE_URL_UNPOOLED` を使う)
 - `npm run db:studio`: DB の中身を見る(Drizzle Studio)
 - `npm run db:schema`: Better Auth の設定から `src/db/schema.ts` を再生成(手で編集しない)
+
+## 依存を足すときの注意(npm の不具合)
+`npm install` を実行すると、macOS 上では `package-lock.json` から `@rolldown/binding-*` が消えることがある(`grep -c '"node_modules/@rolldown/binding-' package-lock.json` が 0 になる)。そのまま出すと、CI(Linux)で `npm test` が落ちる。hook は `rm -r` を止めるので、「node_modules と lock を消して作り直す」手順が使えないときは、**空の一時フォルダに `package.json` だけをコピーし、lock なしで `npm install --package-lock-only` して生成した lock を取り込む**(15 件になる。範囲内のパッチ更新が混ざる)。そのあと、`npm install` をもう一度実行せずに、`npm ci` で `node_modules` を lock のとおりに入れ直す(lock は書き換えない)。
 
 ## 型の方針
 - `strict: true` を前提にする。`any` は使わない(`@typescript-eslint/no-explicit-any` が lint で止める)
