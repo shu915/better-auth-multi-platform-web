@@ -42,20 +42,27 @@ claude-progress.txt (web)
 - chore/cleanup-cron: 期限切れの行を毎日掃除する。src/lib/cleanup.ts(期限切れの verification と session、1 日以上触られていない rate_limit を消す。jwks と user は残す)、src/app/api/cron/cleanup/route.ts(GET。CRON_SECRET の Bearer と一致しないと何もしない。未設定は 503)、vercel.json(毎日 18:00 UTC)。テスト: ハンドラ 4 件、実 Postgres で消すものと残すもの 1 件。秘密の確認を外す、未設定で開ける、期限内の行を消す、rate_limit の保持を短くする、の 4 通りに壊すと落ちることを確認済み。Vercel に CRON_SECRET を入れる(人の作業)。実際の Cron の呼び出しは、デプロイ後に未確認
 
 ## 実行中のタスク
-- chore/pre-deploy(デプロイ前の調整)。済み: db.ts の TLS 強制とプール、レート制限の DB 化(下の「完了」)、マジックリンクの宛先ごとの制限。CSP は Report-Only で済み。残り: 本番(Vercel のプレビュー)で違反が出ないか確認して CSP_MODE を enforce にする、HSTS はデプロイ後に確認(CLAUDE.md の公開前チェックリスト)。**本番の Neon にも、デプロイの前に drizzle/0001 の SQL(rate_limit テーブル)を適用する**(人の作業)
-- E2E(web #12)まで、すべてマージ済み。CI(e2e ジョブを含む)は緑
+- なし。2026-10-09 に本番へデプロイ済み(Web = Vercel + Neon main、Go と DB = Render。いずれもシンガポールに揃えた。Vercel の関数のリージョンを北米からシンガポールに変えて、応答が大きく速くなった)
+- デプロイ後の確認(人が実施済み): ログイン(Resend で本番メールが届く)、/profile の bio(Web と Go の JWT/JWKS の連携)、退会と通知メール(after())、Google の紐づけ、IP ごとの制限(1 分に 5 回、別回線では通る)、宛先ごとの制限(同じアドレスに 3 通で止まる)、HSTS とセキュリティヘッダー、CSP を強制にして全画面で違反なし、404 の nonce(修正済み)、Cron の手動実行(200、削除 0 件)
+- 未確認: Cron がスケジュールどおり動くか(翌日以降のログで見る)、Render DB の verify-full、Render 無料プランのスリープ明けの遅さ、Google の本番での解除の通し
 - セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない(退会の部分は evaluator が合格済み)
 
+## 既知の限界(許容している)
+- Go API にレート制限がない。JWT は退会後も最大 5 分有効で、その間の PUT /me/profile が行を作り直す
+- 宛先ごとの制限は、他人のログインを妨害するのに使える(10 分に 3 通。`+` のエイリアスは別に数える)
+- CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない。E2E は開発サーバーで動く。report-to もない。静的なページを足したら、本番ビルドを手元で起動して HTML の nonce を確かめる(CLAUDE.md)
+- Cron の DELETE に件数の上限がない(今の規模では問題なし)、CRON_SECRET の最小長は強制していない
+- 前回のレビューから見送ったもの: encryptOAuthTokens と storeToken: "hashed"(Better Auth の既定値が未確認で、既存データの移行も要る)、メール HTML の URL のエスケープ
+- Vercel のプレビューのビルドは失敗する(環境変数を Production だけに入れたため。使わない方針)
+- 無料プランの Render はスリープする。Web の Go 呼び出しは 5 秒で切れるので、スリープ明けの初回に bio が出ないことがある
+
 ## これからのタスク(順番)
-00. 本番の Neon に rate_limit テーブルを適用する(デプロイの前。開発の Neon は適用済みか確認する)。レート制限の DB 化は実装済み(下の完了)。デプロイ後は、実際の x-forwarded-for を見て advanced.ipAddress を決める
-0'. デプロイ先が決まったら、Better Auth のレート制限が使うクライアント IP の取り方を確認し、auth.ts の advanced.ipAddress を設定する(CLAUDE.md の公開前チェックリスト参照。未設定だと、複数ホップのプロキシでは全員が同じ枠を共有して、ログインが止まりうる)
-1. 退会の PR(api #12、web #10)はマージ済み。次は chore/tests-and-leftovers の PR
-2. main にタグ v0.2.0 を付ける(web と api の両方。Google ログインと退会が入った後。single-db の分岐点)
-3. 1 回デプロイする(Go を先に出す。退会が DELETE /me に依存するため。公開前チェックリストを先に片付ける。CLAUDE.md 参照)
-4. (chore/cleanup-cron で対応。デプロイ後に Cron が動いたか確認する)
-5. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
+1. main にタグ v0.2.0 を付ける(web と api の両方。api を先に)
+2. 翌日以降、Vercel のログで Cron(`[cleanup] removed`)が動いたか確認する
+3. verify-full で Render DB に繋がるか試す(api の DATABASE_URL)
+4. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
-   - 別のオリジンになるので、trustedOrigins の設定が要る
+   - 別のオリジンになるので、trustedOrigins の設定が要る。/token の HTTP 拒否(SERVER_ONLY)も見直す
    - 直接呼ぶ設計になると、退会後に JWT で行が復活する窓(最大 5 分)が現実になる。そのときにトゥームストーンを検討する
 
 ## このブランチ(chore/tests-and-leftovers)の変更
