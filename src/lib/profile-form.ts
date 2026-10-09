@@ -113,8 +113,6 @@ export type ProfileFormState = {
   values?: { name: string; bio: string | null };
   errors: FieldErrors;
   saved: Record<FieldName, boolean>;
-  /** A problem with the whole submit, not one field (for example, too many requests). */
-  formError?: string;
 };
 
 /**

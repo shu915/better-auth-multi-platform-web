@@ -53,7 +53,6 @@ vi.mock("@/lib/email", () => ({ sendEmail: mocks.sendEmail }));
 
 import { deleteMyAccount, updateProfile } from "@/app/profile/actions";
 import { initialProfileFormState } from "@/lib/profile-form";
-import { accountDeleteLimiter, profileUpdateLimiter } from "@/lib/rate-limits";
 
 const initial = { error: null };
 
@@ -71,8 +70,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
-  accountDeleteLimiter.reset();
-  profileUpdateLimiter.reset();
   mocks.calls.length = 0;
   mocks.afterTasks.length = 0;
   mocks.getSession.mockResolvedValue(freshSession());
@@ -167,61 +164,17 @@ describe("deleteMyAccount", () => {
   });
 });
 
-describe("rate limits on the Server Actions", () => {
-  it("stops a user who keeps trying to delete the account, before doing anything", async () => {
-    for (let i = 0; i < 5; i++) await run("wrong@example.com"); // a wrong email each time
-
-    const result = await run("root@example.com");
-
-    expect(result.state?.error).toMatch(/Too many requests/);
-    expect(mocks.calls).toEqual([]); // not even the correct email got through
-    expect(mocks.afterTasks).toHaveLength(0);
-  });
-
-  it("keeps the delete limit per user", async () => {
-    for (let i = 0; i < 5; i++) await run("wrong@example.com");
-    mocks.getSession.mockResolvedValue({
-      user: { id: "user-2", email: "other@example.com" },
-      session: { createdAt: new Date() },
-    });
-
-    const result = await run("other@example.com");
-
-    expect(result.redirectedTo).toBe("/");
-  });
-
-  it("keeps what the user typed when the save is rejected for validation or for too many requests", async () => {
+describe("updateProfile", () => {
+  it("keeps what the user typed when the save is rejected for validation", async () => {
     const tooLong = "a".repeat(1001);
     const form = new FormData();
     form.set("name", "Alice");
     form.set("bio", tooLong);
 
     const invalid = await updateProfile(initialProfileFormState, form);
+
     expect(invalid.errors.bio).toBeDefined();
     expect(invalid.values).toEqual({ name: "Alice", bio: tooLong });
-
-    for (let i = 0; i < 20; i++) await updateProfile(initialProfileFormState, form);
-    const limited = await updateProfile(initialProfileFormState, form);
-    expect(limited.formError).toMatch(/Too many requests/);
-    expect(limited.values).toEqual({ name: "Alice", bio: tooLong });
-  });
-
-  it("stops a user who keeps saving the profile, without writing", async () => {
-    const form = new FormData();
-    form.set("name", "Alice");
-    form.set("bio", "hi");
-    for (let i = 0; i < 20; i++) {
-      // A successful save redirects to /profile, which the mock raises as an error.
-      await updateProfile(initialProfileFormState, form).catch((err: unknown) => {
-        if (!(err instanceof mocks.Redirected)) throw err;
-      });
-    }
-    mocks.updateUser.mockClear();
-    mocks.callApi.mockClear();
-
-    const state = await updateProfile(initialProfileFormState, form);
-
-    expect(state.formError).toMatch(/Too many requests/);
     expect(mocks.updateUser).not.toHaveBeenCalled();
     expect(mocks.callApi).not.toHaveBeenCalled();
   });

@@ -55,7 +55,7 @@ describe.runIf(Boolean(url))("Better Auth on a real Postgres", () => {
     await admin?.end();
   });
 
-  function createAuth() {
+  function createAuth({ rateLimit = false } = {}) {
     const tokens = new Map<string, string>();
     const auth = betterAuth({
       baseURL: BASE,
@@ -72,6 +72,8 @@ describe.runIf(Boolean(url))("Better Auth on a real Postgres", () => {
         }),
       ],
       ...googleAuthOptions(null, { notifyLinked: async () => {} }),
+      // As auth.ts does: counts in the database. Only the production-only switch is turned on here.
+      ...(rateLimit && { rateLimit: { enabled: true, storage: "database" as const } }),
     });
 
     async function signIn(email: string): Promise<string> {
@@ -185,5 +187,31 @@ describe.runIf(Boolean(url))("Better Auth on a real Postgres", () => {
     expect(await auth.api.getSession({ headers })).toBeNull();
     const [{ n: keysAfter }] = await db.select({ n: count() }).from(schema.jwks);
     expect(keysAfter).toBe(keys); // the signing keys are shared, not the user's data
+  });
+
+  it("keeps Better Auth's rate limit counts in the rate_limit table, and refuses past the limit", async () => {
+    const { auth } = createAuth({ rateLimit: true });
+    const post = async () =>
+      (
+        await auth.handler(
+          new Request(`${BASE}/api/auth/sign-in/magic-link`, {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: BASE, "x-forwarded-for": "198.51.100.9" },
+            body: JSON.stringify({ email: "limited@example.com" }),
+          }),
+        )
+      ).status;
+
+    const statuses = [];
+    for (let i = 0; i < 6; i++) statuses.push(await post());
+
+    expect(statuses.slice(0, 5)).not.toContain(429);
+    expect(statuses[5]).toBe(429);
+    const { rows } = await pool.query<{ key: string; count: number }>(
+      `SELECT key, count FROM rate_limit WHERE key LIKE '198.51.100.9%'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toContain("/sign-in/magic-link");
+    expect(Number(rows[0].count)).toBe(5);
   });
 });

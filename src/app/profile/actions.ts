@@ -7,8 +7,6 @@ import { after } from "next/server";
 import { auth } from "@/lib/auth";
 import { callApi } from "@/lib/api-server";
 import { sendEmail } from "@/lib/email";
-import { tooManyRequestsMessage } from "@/lib/rate-limit";
-import { accountDeleteLimiter, profileUpdateLimiter } from "@/lib/rate-limits";
 import {
   accountDeletedEmail,
   deleteAccount,
@@ -37,15 +35,6 @@ export async function updateProfile(
   if (!session) redirect("/login");
 
   const submitted = submittedValues({ name: formData.get("name"), bio: formData.get("bio") });
-  const limit = profileUpdateLimiter.check(session.user.id);
-  if (!limit.allowed) {
-    return {
-      values: submitted,
-      errors: {},
-      saved: { name: false, bio: false },
-      formError: tooManyRequestsMessage(limit.retryAfterSeconds),
-    };
-  }
 
   const parsed = parseProfileInput({ name: formData.get("name"), bio: formData.get("bio") });
   if (!parsed.ok) {
@@ -94,8 +83,6 @@ export async function deleteMyAccount(
   if (!session) redirect("/login");
 
   const userId = session.user.id;
-  const limit = accountDeleteLimiter.check(userId);
-  if (!limit.allowed) return { error: tooManyRequestsMessage(limit.retryAfterSeconds) };
 
   const confirmEmail = formData.get("confirmEmail");
   const result = await deleteAccount(

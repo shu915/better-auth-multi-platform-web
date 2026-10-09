@@ -94,8 +94,8 @@ function createTestAuth(
       }),
     ],
     ...options,
-    // The rules are the real ones from googleAuthOptions; only the production-only switch is on.
-    ...(rateLimit && { rateLimit: { ...options.rateLimit, enabled: true } }),
+    // Better Auth's limiter is on only in production by default; this turns it on.
+    ...(rateLimit && { rateLimit: { enabled: true } }),
   });
 
   // Signs the email in through the real magic link flow, which creates the user. Returns the
@@ -412,7 +412,7 @@ describe("Google sign-in policy", () => {
   });
 });
 
-describe("rate limits on the auth endpoints", () => {
+describe("the rate limit on the sign-in link request", () => {
   const ip = { "x-forwarded-for": "203.0.113.7" };
 
   async function post(t: ReturnType<typeof createTestAuth>, path: string, cookie = "") {
@@ -425,20 +425,6 @@ describe("rate limits on the auth endpoints", () => {
     );
     return res.status;
   }
-
-  it("limits the other account actions too", async () => {
-    for (const [path, max] of [
-      ["unlink-account", 5],
-      ["link-social", 5],
-      ["sign-in/social", 10],
-    ] as const) {
-      const t = createTestAuth(undefined, { rateLimit: true });
-      const statuses = [];
-      for (let i = 0; i < max + 1; i++) statuses.push(await post(t, path));
-      expect(statuses.slice(0, max), path).not.toContain(429);
-      expect(statuses[max], path).toBe(429);
-    }
-  });
 
   it("keeps the magic link limit: the sixth request in a minute gets 429", async () => {
     const t = createTestAuth(undefined, { rateLimit: true });

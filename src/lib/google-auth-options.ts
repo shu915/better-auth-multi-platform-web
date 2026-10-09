@@ -9,18 +9,6 @@ import type { GoogleCredentials } from "@/lib/google-oauth";
 // the email, say) gets this 5 minutes too.
 export const FRESH_SESSION_SECONDS = 5 * 60;
 
-// Better Auth's rate limiter, per client IP. It is on in production by default (off in
-// development) and keeps its counts in this server's memory. The magic link already has its own
-// rule (5 per minute, from the plugin). These add the actions that change an account. Deleting
-// the account and updating the profile are refused over HTTP altogether (see below).
-// Calls to auth.api.* from our own server code are not counted: the Server Actions that make them
-// have their own limits (rate-limits.ts).
-export const AUTH_RATE_LIMIT_RULES = {
-  "/link-social": { window: 60, max: 5 },
-  "/unlink-account": { window: 60, max: 5 },
-  "/sign-in/social": { window: 60, max: 10 },
-} as const;
-
 export type LinkedNotice = { to: string; provider: string };
 
 // Deleting the account and changing the profile have rules that live in our Server Actions: the
@@ -93,7 +81,6 @@ export function googleAuthOptions(
     // with the user. Without a password or a verification mail, it asks for a fresh session,
     // which is the same freshAge as linking.
     user: { deleteUser: { enabled: true } },
-    rateLimit: { customRules: AUTH_RATE_LIMIT_RULES },
     session: { freshAge: FRESH_SESSION_SECONDS },
     hooks: { before: guardAccountEndpoints },
     databaseHooks: {
