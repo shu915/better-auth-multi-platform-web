@@ -8,6 +8,7 @@ import { sendEmail } from "@/lib/email";
 import { googleAuthOptions } from "@/lib/google-auth-options";
 import { resolveGoogleCredentials } from "@/lib/google-oauth";
 import { linkedAccountEmail } from "@/lib/linked-accounts";
+import { allowMagicLinkTo } from "@/lib/rate-limits";
 import * as schema from "@/db/schema";
 
 const baseURL =
@@ -27,26 +28,39 @@ const google = resolveGoogleCredentials({
 });
 export const googleEnabled = google !== null;
 
+// The sign-in policy lives in googleAuthOptions so the tests run the same options.
+const policy = googleAuthOptions(google, {
+  notifyLinked: async ({ to, provider }) => {
+    const { subject, text, html } = linkedAccountEmail(provider, new Date());
+    // Not awaited, like the magic link: the link itself must not wait for (or fail on) mail.
+    after(async () => {
+      try {
+        await sendEmail({ to, subject, text, html });
+      } catch (err) {
+        console.error("[email] failed to send the linked-account notice", err);
+      }
+    });
+  },
+});
+
 export const auth = betterAuth({
   baseURL,
   database: drizzleAdapter(db, { provider: "pg", schema }),
-  // The sign-in policy lives in googleAuthOptions so the tests run the same options.
-  ...googleAuthOptions(google, {
-    notifyLinked: async ({ to, provider }) => {
-      const { subject, text, html } = linkedAccountEmail(provider, new Date());
-      // Not awaited, like the magic link: the link itself must not wait for (or fail on) mail.
-      after(async () => {
-        try {
-          await sendEmail({ to, subject, text, html });
-        } catch (err) {
-          console.error("[email] failed to send the linked-account notice", err);
-        }
-      });
-    },
-  }),
+  ...policy,
+  // Count rate limits in the database, not in memory: on a serverless host (Vercel) each request
+  // can run in a different process, so memory counts nothing. This needs the rateLimit table in
+  // every database this config runs against before it is deployed (the schema generation and
+  // migration steps are in CLAUDE.md).
+  rateLimit: { storage: "database" },
   plugins: [
     magicLink({
       sendMagicLink: async ({ email, url }) => {
+        // Too many links to one address: send nothing, and answer exactly as if one was sent
+        // (see allowMagicLinkTo). The address is not logged.
+        if (!(await allowMagicLinkTo(email))) {
+          console.warn("[email] sign-in link not sent: too many requests for one address");
+          return;
+        }
         // Not awaited: send failures and latency must not differ between
         // registered and unregistered emails (account enumeration).
         after(async () => {

@@ -73,9 +73,49 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
   const email = `e2e-${Date.now()}@example.com`;
   const bio = `Hello from the end-to-end test ${Date.now()}`;
 
+  // Anything the browser says the Content-Security-Policy would block, on any page of the run.
+  // The policy is in report-only mode: nothing is blocked yet, but a violation here means the
+  // page would break the day it is enforced. The only thing left out is Next.js's own development
+  // overlay (next-devtools), which exists only under `next dev`, never in a production build.
+  const violations: string[] = [];
+  await page.exposeFunction("reportCspViolation", (text: string) => violations.push(text));
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (event) => {
+      if (event.sourceFile.includes("next-devtools")) return;
+      const report: unknown = Reflect.get(window, "reportCspViolation");
+      if (typeof report === "function") {
+        report(`${event.violatedDirective} | ${event.blockedURI} | ${event.sourceFile}:${event.lineNumber} | ${event.sample.slice(0, 80)}`);
+      }
+    });
+  });
+
   // A page that needs a session sends a visitor to /login.
-  await page.goto("/profile");
+  const loginResponse = await page.goto("/profile");
   await expect(page).toHaveURL(/\/login/);
+
+  // The policy is on the page, and Next.js put its nonce on the page's scripts (the browser
+  // hides the attribute but keeps the value on the element).
+  const policy = loginResponse?.headers()["content-security-policy-report-only"] ?? "";
+  const nonce = /'nonce-([^']+)'/.exec(policy)?.[1];
+  expect(nonce, "the page has a Content-Security-Policy with a nonce").toBeTruthy();
+  expect(await page.evaluate(() => document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce ?? "")).toBe(nonce);
+
+  // Asking for a sign-in link four times for one address: all four get the same answer (so the
+  // limit shows nothing about the address), but only three emails are sent.
+  const limited = `e2e-limited-${Date.now()}@example.com`;
+  const loginOrigin = new URL(page.url()).origin;
+  const answers: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const res = await page.request.post("/api/auth/sign-in/magic-link", {
+      headers: { origin: loginOrigin, "content-type": "application/json" },
+      data: { email: limited },
+    });
+    answers.push(res.status());
+  }
+  expect(answers).toEqual([200, 200, 200, 200]);
+  await expect.poll(() => mailsTo(limited).filter((m) => m.subject === "Sign in").length).toBe(3);
+  await page.waitForTimeout(1_000); // a fourth email would have been sent by now
+  expect(mailsTo(limited).filter((m) => m.subject === "Sign in")).toHaveLength(3);
 
   await signIn(page, email);
   const userId = await userIdOf(email);
@@ -134,4 +174,6 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
   // The old session no longer opens anything.
   await page.goto("/profile");
   await expect(page).toHaveURL(/\/login/);
+
+  expect(violations, "the policy would block something on these pages").toEqual([]);
 });

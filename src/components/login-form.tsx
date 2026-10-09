@@ -82,6 +82,9 @@ export function LoginForm({
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           We sent a sign-in link to {email}.
         </p>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Not there after a few minutes? Check your spam folder, wait ten minutes, then try again.
+        </p>
         <button
           type="button"
           onClick={() => setStatus("idle")}

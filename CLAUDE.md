@@ -17,6 +17,8 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - Better Auth(認証)
 - Drizzle + Neon(Postgres)
 - Go API とは JWT で連携(Go は JWKS で署名を検証)
+- DB 接続(`src/lib/db.ts` と `src/lib/database-config.ts`): 本番(`NODE_ENV=production`)では、`DATABASE_URL` に `sslmode=require`(または `verify-ca` / `verify-full`)がないと起動時にエラー(Go と同じ。`next build` の間は検査しない。ビルドはダミーの設定で、接続しないため)。開発は強制しない。プールは `globalThis` に 1 つだけ作り(ホットリロードで増えない)、最大 10 接続(`DATABASE_POOL_MAX` で 1〜50 に変更)、接続待ち 5 秒、クエリ 10 秒(クライアント側の `query_timeout`。サーバー側の `statement_timeout` を起動パラメータで送ると、Neon の pooled URL などが拒否する恐れがあるため使わない)、アイドル接続のエラーはログに出す。`DATABASE_URL_UNPOOLED` は `drizzle-kit` 専用(`-pooler` の付かない、直接つなぐ URL にする。プール経由だとマイグレーションが固まる)
+- CSP(Content-Security-Policy。`src/proxy.ts` と `src/lib/csp.ts`): ページへのリクエストごとに、新しい合言葉(nonce)を作り、「合言葉の付いた自分たちのスクリプトだけ実行してよい」というポリシーをヘッダーで返す(Next.js は、リクエストのヘッダーから合言葉を拾って、自分のスクリプトに付ける)。`unsafe-inline` は使わない。`unsafe-eval` は開発だけ(React が開発でのみ使う)。`frame-ancestors 'none'`、`object-src 'none'` なども付く。**今は `Content-Security-Policy-Report-Only`(違反を報告するだけで止めない)**。ページを毎回描画する必要がある(全ページがセッションを読むので満たしている)。API のルート、静的ファイル、先読みには付けない。E2E が、ヘッダーの合言葉がページのスクリプトに付いていることと、違反の報告が一つも出ないことを確かめる
 - Go API の呼び出し: `src/lib/api.ts` の `apiRequest`(トークンを受け取る低レベルの関数)と、`src/lib/api-server.ts` の `callApi` / `getMyProfile`(サーバー用。JWT を自分で発行する)。JWT は `Authorization: Bearer` で渡す。ベース URL は `API_BASE_URL`(開発は未設定なら `http://localhost:8080`、本番では必須)。5 秒でタイムアウトする
 - `/profile`(Server Component、閲覧のみ): email と name は自分のセッションから、bio は Go の `GET /me/profile` から取って表示し、Edit ボタンで `/profile/edit` に移る。JWT は `callApi` が発行する(ブラウザには出さない)。API が落ちていても、email と name は表示し、bio の欄にだけエラーを出す
 - `/profile/edit`(Server Component): name と bio の編集フォーム(`src/components/profile-form.tsx`)と Cancel リンク(`/profile` に戻る)。API が落ちていても、name は保存できる(bio 欄は出さないので、空で上書きされない)。保存後は、失敗したフィールドがなければ `/profile` に移り、一部でも失敗したら `/profile/edit` に残してフィールドごとに結果を出す(判定は `shouldLeaveEditPage`)
@@ -95,16 +97,28 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git push/clean/reset --hard`(`git commit` はローカルで取り消せるのでブロックしない。コミットは頼まれたときだけ、という運用は変えない)、`rm -r`、`db:migrate` / `db:schema` / `drizzle-kit migrate|push`、`drizzle/`・`src/db/schema.ts`・`package-lock.json` の編集、`@ts-ignore` / `eslint-disable` / `as unknown as` / `any` の追加、テストや設定への `skip` / `only` / `strict:false` / ルール `off` / `exclude`
 - ブロックされたら回避せず、理由を報告して人の指示を待つ
 
+## レート制限の保存先を DB にする手順(人が実行する)
+`auth.ts` は、Better Auth のレート制限を `storage: "database"` にしている(サーバーレスでは、メモリに数えても効かないため)。Better Auth は起動時に Drizzle のスキーマを検査し、`rateLimit` テーブルがないと **`Missing tables: rateLimit` でエラーになる**(開発サーバーも E2E も動かない)。次の順で、人が実行する(hook は、この 3 つを私が実行するのを止める):
+1. `npm run db:schema`(`auth.ts` の設定から `src/db/schema.ts` を再生成する。`rateLimit` が足される)
+2. `npm run db:generate`(`drizzle/` に、マイグレーションの SQL を作る)
+3. `npm run db:migrate`(`.env.local` の `DATABASE_URL_UNPOOLED` が指す DB に適用する。**本番の Neon にも、デプロイの前に同じ SQL を適用する**。Vercel のプレビューが、本番とは別の Neon のブランチを指すなら、そちらにも。`rate_limit` テーブルがない DB では、Better Auth のレート制限の対象になる認証リクエストが失敗する。一方、自前の宛先ごとの制限は、数えられなければ通す(fail-open)ので、壊れても気づきにくい。古いコードに戻すときは、テーブルが残っていても害はない)
+
+E2E と実 Postgres のテストは、`drizzle/` の SQL を直接流すので、2 のあとは追加の作業が要らない。
+
+## デプロイ先
+- Web: **Vercel + Neon**(サーバーレス)。API(Go)とその DB は **Render**。Go は、Vercel の https の JWKS(`<本番の URL>/api/auth/jwks`)を取りに来るので、Go の `AUTH_ISSUER` は Vercel の本番 URL にする。
+- サーバーレスなので、**メモリに数えるレート制限はほとんど効かない**(リクエストごとに別のプロセスになりうる)。そのため、本番では DB の `rate_limit` テーブルに数える: Better Auth の制限(上の手順)と、マジックリンクの宛先ごとの制限(`src/lib/database-rate-limit.ts`。Better Auth と同じテーブルと同じ規則で、キーは `action:<名前>:<ID>` で衝突しない)。記録されるのは、キー(IP や小文字にそろえたメールアドレス)、回数、最後の時刻だけ。1 時間より古い行は、新しい時間枠の開始時に消える。開発とテストはメモリ版(`NODE_ENV=production` のときだけ DB 版)。DB 版は 1 つの SQL で数えるので、同時に来たリクエストでも上限を超えない(実 Postgres のテストで 40 件同時に投げて、通るのが 5 件であることを確認)。**DB に届かないときは、リクエストを通す**(制限は歯止めで、数えられない障害で全員を締め出さないため。ログには残す)。
+- Neon は **pooled URL**(ホスト名に `-pooler`)を使う。インスタンスの数だけプールが増えるので、`DATABASE_POOL_MAX` は小さく設定する(3 前後を想定)。マイグレーションは `DATABASE_URL_UNPOOLED`。
+- Vercel は `x-forwarded-for` にクライアントの IP を入れる(上書きして偽装を防ぐ、と理解している。**要確認**)。デプロイ後に実際の値を見て、`advanced.ipAddress` が既定のままで足りるか決める。HSTS も Vercel が付けるか確認する(要確認)。
+
 ## 公開前チェックリスト
-- レート制限(連打対策)は入っている。Better Auth のエンドポイントは `google-auth-options.ts` の `AUTH_RATE_LIMIT_RULES`(退会 10 分に 3 回、紐づけ・解除 1 分に 5 回、Google ログイン 1 分に 10 回。マジックリンクはプラグインの 1 分に 5 回)で、本番だけ有効(開発は無効)。Server Action(プロフィール保存は 1 分に 20 回、退会は 10 分に 5 回、ユーザー単位)は `src/lib/rate-limits.ts`。**どちらもサーバーのメモリに数える**ので、インスタンスが複数だったり、サーバーレスで毎回別のプロセスになったりすると、効きが弱い。そうなる構成にするなら、Better Auth は `rateLimit: { storage: "database" }`(スキーマ再生成が要る: `db:schema` → `db:generate` → `db:migrate`。人が実行する)にする。**デプロイ先が決まったら、必ず確認する(評価者の指摘):** Better Auth はクライアントの IP を `x-forwarded-for` から取る。`trustedProxies` がないと、この値が **1 つのときだけ**採用し、`client, proxy` のように複数あると IP が取れず、全員が同じ 1 つの枠を共有する(少数のリクエストでログインが止まる)。逆に、プロキシが `x-forwarded-for` を上書きしない構成では、偽装で制限を回避できる。デプロイ先に合わせて `auth.ts` の `advanced.ipAddress`(`ipAddressHeaders` か `trustedProxies`)を設定する。**未設定のままなので、単一のプロキシ(`x-forwarded-for` が 1 つ)を前提にしている**
-- `pg` の Pool を `globalThis` にキャッシュし、`max` と `error` ハンドラを入れる
+- レート制限(連打対策)は、**サインイン用のメールだけ**にかけている(ログインしていない誰でも押せて、押すたびにメールが送られる唯一の場所のため)。(1) IP ごと: Better Auth のマジックリンクのプラグイン標準(1 分に 5 回)。本番だけ有効(開発は無効)。(2) 宛先ごと: 10 分に 3 通(`src/lib/rate-limits.ts` の `allowMagicLinkTo`)。制限されても画面は「メールを確認してください」のままで、どのアドレスが狙われているかは分からない(画面には、届かないときの一般的な案内「迷惑メールを確認し、10 分待ってからやり直す」を出す)。キーはメールアドレスのハッシュ(アドレス自体は DB に残らない。Better Auth 側の行には IP が残り、1 時間より古い行は消える)。**既知の限界(トレードオフとして受け入れている):** (a) 他人が狙ったアドレスに 10 分に 3 回要求し続けると、そのアドレスの本人には、メールが届かない(メール爆弾を防ぐ代わりに、妨害に使われうる)。IP ごとの制限(1 分に 5 回)は、複数の IP から出されると効かない。(b) `a+1@gmail.com` と `a+2@gmail.com` は別のアドレスとして数えるので、同じ受信箱への連続送信は、この制限では止まらない(IP ごとの制限が補う)。他の操作(Google ログイン・紐づけ・解除、プロフィール保存、退会)は、ログイン済みか Google が見張っているか、すでに強く守られているため、独自の制限はかけない(Better Auth の既定の制限だけが本番で効く)。必要になったら、`database-rate-limit.ts` を使って足せる。本番では、どちらも DB に数える(上の「デプロイ先」)。**デプロイ先が決まったら、必ず確認する(評価者の指摘):** Better Auth はクライアントの IP を `x-forwarded-for` から取る。`trustedProxies` がないと、この値が **1 つのときだけ**採用し、`client, proxy` のように複数あると IP が取れず、全員が同じ 1 つの枠を共有する(少数のリクエストでログインが止まる)。逆に、プロキシが `x-forwarded-for` を上書きしない構成では、偽装で制限を回避できる。デプロイ先に合わせて `auth.ts` の `advanced.ipAddress`(`ipAddressHeaders` か `trustedProxies`)を設定する。**未設定のままなので、単一のプロキシ(`x-forwarded-for` が 1 つ)を前提にしている**
 - `trustedOrigins` を設定する(Tauri / Expo など、別のオリジンのクライアントを足すとき)
 - マジックリンクのサインアップを制限するか決める(`disableSignUp`)。今は、メールアドレスを知っていれば誰でも新規登録できる(Google では新規登録できない)
 - 本番の Google Cloud Console に、本番の URL のリダイレクト URI(`https://<本番のドメイン>/api/auth/callback/google`)を登録する
 - メール HTML の URL をエスケープする
-- マジックリンクに、宛先メールごとの制限がない(Better Auth のレート制限は IP 単位)。複数の IP から同じ宛先へ送ると、他人の受信箱にメールを大量に送れる。`sendMagicLink` の中で宛先ごとに数えるか、メール送信側(Resend)の制限に頼るかを決める
-- セキュリティヘッダーに CSP と HSTS がない(HSTS はロードバランサや CDN でもよい)
-- `src/lib/db.ts` は本番で TLS を強制しない(Go 側は `RequireTLS` で強制)。`DATABASE_URL` に `sslmode=require` 以上が入っているか、起動時に検査する
+- **CSP は入っているが、まだ「報告だけ」のモード(止めない)。** 本番(Vercel のプレビュー)で、ブラウザのコンソールに `[Report Only]` の違反が出ないことを確かめてから、`src/lib/csp.ts` の `CSP_MODE` を `"enforce"` に変える(1 行)。E2E は開発サーバーで動かすので、本番だけの差(`'unsafe-eval'` なし、`upgrade-insecure-requests` あり)と、開発用の画面部品(`next-devtools`)の除外は、E2E では確かめられない。Google ログインなど、外部のサイトへ移る操作は、ナビゲーションなので CSP の対象外だが、強制の前に手で一度通す。**強制の前に、手で確かめること:** (1) 全画面(ログイン、メール確認、プロフィール、編集、退会、Google の紐づけ・解除)をプレビューで通し、コンソールに違反が出ない。(2) 存在しない URL を開く(`/_not-found` はビルドで静的になっており、nonce のないスクリプトになる恐れがある。違反が出たら、404 を動的にする: `not-found` で `await connection()`)。(3) Vercel のプレビューには Vercel Toolbar などのウィジェット(`vercel.live`)が入り、違反に見えることがある。本番にも出る違反かを見分ける。(4) 違反の報告先(`report-to`)はない。コンソールを見落とさない。**今後、静的なページ(セッションを読まないページ)を足すと、nonce が付かず、強制では動かなくなる**
+- HSTS: コードでは付けていない。Vercel が自動で付けるはずなので、デプロイ後に `curl -sI https://<本番のドメイン> | grep -i strict-transport` で確認する(付いていなければ、`next.config.ts` の `headers()` に足す)
 - CI の GitHub Actions がタグ指定(`@v7`)で、コミット SHA 固定ではない
 - Server Action の `allowedOrigins`:リバースプロキシの背後で、Server Action が Origin の不一致で断られないか確認する
 - Better Auth に `cookieCache` を入れるなら、`updateProfile` の `currentName: session.user.name`(セッションの名前との比較)をやめ、bio と同じく `initialName` の hidden 値と比べる(セッションが古い名前を返すと、A→B→A と戻した保存が「変更なし」と判定されて DB に書かれない)
