@@ -1,5 +1,5 @@
 claude-progress.txt (web)
-最終更新: 2026-10-08
+最終更新: 2026-10-09
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
 
 ## 完了したタスク
@@ -32,6 +32,8 @@ claude-progress.txt (web)
 - chore/pre-deploy(2): レート制限を DB に数える(Vercel はサーバーレスで、メモリでは効かないため)。**対象はサインイン用のメールだけに絞った**(ログイン不要で押せて、押すたびにメールが送られる唯一の場所。プロフィール保存・退会・Google 系の独自の制限は、ログイン済みか別の守りがあるため外した)。auth.ts は rateLimit.storage=database(IP ごと: マジックリンクのプラグイン標準の 1 分に 5 回)。宛先ごとの制限(3 通/10 分。制限されても画面は同じ)は src/lib/database-rate-limit.ts(同じ rate_limit テーブル、1 つの SQL で原子的に数える。DB に届かないときは通す)。本番だけ DB 版、開発とテストはメモリ版。スキーマ(rateLimit)と drizzle/0001 は人が生成・適用した(開発の Neon に適用済み)。実 Postgres のテストで、40 件の同時リクエストで通るのが 5 件、Better Auth の DB 保存が生成されたテーブルで動き 6 回目が 429 になることを確認。壊すと落ちることを確認済み
 
 - chore/pre-deploy(3): CSP(src/proxy.ts、src/lib/csp.ts)。リクエストごとの nonce、unsafe-inline なし、unsafe-eval は開発だけ、frame-ancestors none など。**Report-Only(止めない)モード**で入れた。E2E が、ヘッダーの nonce がページのスクリプトに付いていることと、違反ゼロ(開発用の next-devtools だけ除外)を確かめる。壊すと落ちることを確認済み。単体テストも追加(ポリシー、nonce の一意性、proxy)
+
+- chore/pre-deploy-2(フルレビューの指摘): 本番で EMAIL_TRANSPORT=console を拒否(リンクがログに出るため)、本番で API_BASE_URL が https でなければ拒否、/get-access-token と /refresh-token を HTTP では 403(SERVER_ONLY)に。テスト 3 件追加、各ガードを外すと落ちることを確認済み。見送り: 宛先制限の悪用(許容済み)、storeToken=hashed と encryptOAuthTokens(Better Auth の挙動を未確認で、既存データの移行も要る。デプロイ後に検討)、メール HTML の URL(Better Auth が組み立てる)。デプロイ前の突き合わせ(環境変数 X-1、順序 X-2)は人の作業
 
 ## 実行中のタスク
 - chore/pre-deploy(デプロイ前の調整)。済み: db.ts の TLS 強制とプール、レート制限の DB 化(下の「完了」)、マジックリンクの宛先ごとの制限。CSP は Report-Only で済み。残り: 本番(Vercel のプレビュー)で違反が出ないか確認して CSP_MODE を enforce にする、HSTS はデプロイ後に確認(CLAUDE.md の公開前チェックリスト)。**本番の Neon にも、デプロイの前に drizzle/0001 の SQL(rate_limit テーブル)を適用する**(人の作業)

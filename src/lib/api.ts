@@ -28,6 +28,10 @@ function resolveBaseURL(explicit?: string): string {
     process.env.API_BASE_URL ||
     (process.env.NODE_ENV === "production" ? undefined : "http://localhost:8080");
   if (!url) throw new Error("API_BASE_URL is required in production");
+  // The Bearer JWT and the profile travel on this URL; in production it must be encrypted.
+  if (process.env.NODE_ENV === "production" && !url.startsWith("https://")) {
+    throw new Error("API_BASE_URL must be https in production");
+  }
   return url;
 }
 

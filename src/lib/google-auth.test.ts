@@ -463,6 +463,17 @@ describe("endpoints that only our Server Actions may call", () => {
     return { status: res.status, body: await res.text() };
   }
 
+  it("refuses to hand out the stored Google tokens over HTTP", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    for (const path of ["get-access-token", "refresh-token"]) {
+      const res = await http(t, path, cookie, { providerId: "google" });
+      expect(res.status).toBe(403);
+      expect(res.body).toContain("SERVER_ONLY");
+    }
+  });
+
   it("refuses to delete the account over HTTP, even with a fresh session", async () => {
     const t = createTestAuth();
     const cookie = await t.signInWithMagicLink("root@example.com");

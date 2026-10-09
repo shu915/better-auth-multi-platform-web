@@ -43,6 +43,12 @@ describe("sendEmail with the file transport (used by the end-to-end tests)", () 
     await expect(sendEmail(mail)).rejects.toThrow(/not allowed in production/);
   });
 
+  it("console is refused in production too, so sign-in links never reach the host's logs", async () => {
+    vi.stubEnv("EMAIL_TRANSPORT", "console");
+    vi.stubEnv("NODE_ENV", "production");
+    await expect(sendEmail(mail)).rejects.toThrow(/not allowed in production/);
+  });
+
   it("still rejects an unknown transport", async () => {
     vi.stubEnv("EMAIL_TRANSPORT", "carrier-pigeon");
     await expect(sendEmail(mail)).rejects.toThrow(/must be/);
