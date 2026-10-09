@@ -21,9 +21,16 @@ export type LinkedNotice = { to: string; provider: string };
 // the session cookie, but the JWT is meant to stay on our server (callApi issues it per call). A
 // stolen session or a script on the page could otherwise take a JWT and call the Go API directly,
 // without the fresh-login check that the account actions need. /jwks (the public keys the Go
-// API fetches) stays public. When a desktop or mobile client has to call the Go API directly,
+// API fetches) stays public. /get-access-token and /refresh-token would hand out the stored Google
+// tokens to anyone with the cookie; nothing here uses them. When a desktop or mobile client has to call the Go API directly,
 // this is the rule to revisit.
-const SERVER_ONLY_PATHS = new Set(["/delete-user", "/update-user", "/token"]);
+const SERVER_ONLY_PATHS = new Set([
+  "/delete-user",
+  "/update-user",
+  "/token",
+  "/get-access-token",
+  "/refresh-token",
+]);
 
 // Runs before every Better Auth endpoint. Two jobs: refuse the server-only endpoints over HTTP,
 // and make linking need a recent sign-in, like unlinking already does. No session at all is left

@@ -106,6 +106,12 @@ describe("apiRequest", () => {
     expect(String(fetch.mock.calls[0][0])).toBe("http://from-env.test/me");
   });
 
+  it("refuses a plain http API_BASE_URL in production, so the JWT is never sent unencrypted", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("API_BASE_URL", "http://api.example.com");
+    await expect(apiRequest("/me", "token", { fetch: fakeFetch({}) })).rejects.toThrow("must be https");
+  });
+
   it("requires API_BASE_URL in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("API_BASE_URL", "");

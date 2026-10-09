@@ -6,7 +6,8 @@ type Email = { to: string; subject: string; html: string; text: string };
 // "console" logs the email; "resend" sends it; "file" appends it as one JSON line to EMAIL_FILE,
 // which the end-to-end tests read to follow the magic link. Unset defaults to "console" outside
 // production, and is an error in production so a missing setting can't silently drop mail.
-// "file" is refused in production: it would write every sign-in link to disk.
+// "file" and "console" are refused in production: they would write every sign-in link to disk or
+// to the host's logs, where anyone who can read them can sign in as someone else.
 function getTransport(): "console" | "resend" | "file" {
   const transport =
     process.env.EMAIL_TRANSPORT ??
@@ -14,8 +15,8 @@ function getTransport(): "console" | "resend" | "file" {
   if (transport !== "console" && transport !== "resend" && transport !== "file") {
     throw new Error('EMAIL_TRANSPORT must be "console", "resend" or "file"');
   }
-  if (transport === "file" && process.env.NODE_ENV === "production") {
-    throw new Error('EMAIL_TRANSPORT "file" is for tests and is not allowed in production');
+  if ((transport === "file" || transport === "console") && process.env.NODE_ENV === "production") {
+    throw new Error(`EMAIL_TRANSPORT "${transport}" is for development and tests and is not allowed in production`);
   }
   return transport;
 }
