@@ -9,6 +9,7 @@ import { count, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "@/db/schema";
+import { cleanupExpired } from "@/lib/cleanup";
 import { googleAuthOptions } from "@/lib/google-auth-options";
 
 // These run against a real Postgres, with the real tables from drizzle/ (the migrations are
@@ -213,5 +214,46 @@ describe.runIf(Boolean(url))("Better Auth on a real Postgres", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].key).toContain("/sign-in/magic-link");
     expect(Number(rows[0].count)).toBe(5);
+  });
+
+  it("cleans up expired rows and keeps the live ones, the users and the signing keys", async () => {
+    const { auth, signIn } = createAuth();
+    await signIn("cleanup@example.com"); // a live session, and a user
+    await auth.api.getJwks(); // makes sure the signing key exists
+    const now = new Date();
+    const hour = 3_600_000;
+    const live = new Date(now.getTime() + 24 * hour);
+    const dead = new Date(now.getTime() - hour);
+
+    await db.insert(schema.verification).values([
+      { id: "v-old", identifier: "old", value: "x", expiresAt: dead },
+      { id: "v-live", identifier: "live", value: "x", expiresAt: live },
+    ]);
+    await db.insert(schema.rateLimit).values([
+      { id: "r-old", key: "old|/x", count: 3, lastRequest: now.getTime() - 25 * hour },
+      { id: "r-new", key: "new|/x", count: 3, lastRequest: now.getTime() - hour },
+    ]);
+    const [{ id: userId }] = await db.select({ id: schema.user.id }).from(schema.user).limit(1);
+    await db.insert(schema.session).values({
+      id: "s-old",
+      token: "s-old-token",
+      userId,
+      expiresAt: dead,
+    });
+    const keys = (await db.select({ n: count() }).from(schema.jwks))[0].n;
+
+    const result = await cleanupExpired(db, now);
+
+    expect(result).toEqual({ verification: expect.any(Number), session: expect.any(Number), rateLimit: 1 });
+    const ids = async (table: typeof schema.verification | typeof schema.session | typeof schema.rateLimit) =>
+      (await db.select({ id: table.id }).from(table)).map((r) => r.id);
+    expect(await ids(schema.verification)).toContain("v-live");
+    expect(await ids(schema.verification)).not.toContain("v-old");
+    expect(await ids(schema.session)).not.toContain("s-old");
+    expect((await ids(schema.session)).length).toBeGreaterThanOrEqual(1); // the live session stays
+    expect(await ids(schema.rateLimit)).toContain("r-new");
+    expect(await ids(schema.rateLimit)).not.toContain("r-old");
+    expect((await db.select({ n: count() }).from(schema.user))[0].n).toBeGreaterThanOrEqual(1);
+    expect((await db.select({ n: count() }).from(schema.jwks))[0].n).toBe(keys);
   });
 });

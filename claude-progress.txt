@@ -39,6 +39,8 @@ claude-progress.txt (web)
 
 - fix/not-found-nonce: CSP を強制にしたあと、本番の 404 でインラインのスクリプトとスタイルが止められた(標準の 404 は静的で nonce が付かない)。src/app/not-found.tsx を追加し、await connection() で動的にした。本番ビルドを手元で起動して、404 のスクリプトとスタイル全部に nonce が付くことを確認済み。E2E は開発サーバーなので捕まえられない(自動テストは未追加)
 
+- chore/cleanup-cron: 期限切れの行を毎日掃除する。src/lib/cleanup.ts(期限切れの verification と session、1 日以上触られていない rate_limit を消す。jwks と user は残す)、src/app/api/cron/cleanup/route.ts(GET。CRON_SECRET の Bearer と一致しないと何もしない。未設定は 503)、vercel.json(毎日 18:00 UTC)。テスト: ハンドラ 4 件、実 Postgres で消すものと残すもの 1 件。秘密の確認を外す、未設定で開ける、期限内の行を消す、rate_limit の保持を短くする、の 4 通りに壊すと落ちることを確認済み。Vercel に CRON_SECRET を入れる(人の作業)。実際の Cron の呼び出しは、デプロイ後に未確認
+
 ## 実行中のタスク
 - chore/pre-deploy(デプロイ前の調整)。済み: db.ts の TLS 強制とプール、レート制限の DB 化(下の「完了」)、マジックリンクの宛先ごとの制限。CSP は Report-Only で済み。残り: 本番(Vercel のプレビュー)で違反が出ないか確認して CSP_MODE を enforce にする、HSTS はデプロイ後に確認(CLAUDE.md の公開前チェックリスト)。**本番の Neon にも、デプロイの前に drizzle/0001 の SQL(rate_limit テーブル)を適用する**(人の作業)
 - E2E(web #12)まで、すべてマージ済み。CI(e2e ジョブを含む)は緑
@@ -50,7 +52,7 @@ claude-progress.txt (web)
 1. 退会の PR(api #12、web #10)はマージ済み。次は chore/tests-and-leftovers の PR
 2. main にタグ v0.2.0 を付ける(web と api の両方。Google ログインと退会が入った後。single-db の分岐点)
 3. 1 回デプロイする(Go を先に出す。退会が DELETE /me に依存するため。公開前チェックリストを先に片付ける。CLAUDE.md 参照)
-4. verification テーブルの期限切れの行を定期的に掃除する運用を決める(退会後に残るのは、使っていないマジックリンクの行だけ。CLAUDE.md 参照)
+4. (chore/cleanup-cron で対応。デプロイ後に Cron が動いたか確認する)
 5. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
    - 別のオリジンになるので、trustedOrigins の設定が要る
