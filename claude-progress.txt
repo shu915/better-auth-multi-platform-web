@@ -3,56 +3,49 @@ claude-progress.txt (web)
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
 
 ## 完了したタスク
-- Better Auth でマジックリンクのログイン(パスワードなし)
-- JWT の発行(5分、payload は最小化)と、サーバー側の Go 呼び出し(callApi)
-- /profile(閲覧のみ): email と name はセッション、bio は Go の GET /me/profile
-- /profile/edit(編集): name と bio を編集して保存できる(Server Action `updateProfile`)
-  - name は Better Auth の updateUser(Web の DB)、bio は Go の PUT /me/profile
-  - 変更したフィールドだけ書く。一部失敗でも、成功した分は保存される(再送で直る)
-  - 全成功なら /profile に移り、一部失敗なら /profile/edit に残る
-- /profile と /profile/edit の画面の手動確認(人間が実施済み: 閲覧、Edit、保存後の遷移、一部失敗、Go 停止時、未ログイン)
-- Google ログイン(紐づけ・解除を含む)の実装と、自動検証(feature/oauth-google。PR #9 でマージ済み)
-  - 設計: マジックリンクで作ったユーザーが root(sub が決まる)。Google は新規登録できず、ログイン済みのユーザーが /profile の「Link Google」で足す任意の手段(自動連携はしない。別メールの Google も可。解除できる)。環境変数 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を両方設定したときだけ有効。Go は変えない
-  - 方針は src/lib/google-auth-options.ts にあり、src/lib/google-auth.test.ts(7 件)が、本物の Better Auth をメモリ上の DB で動かして守っている(設定を壊すと落ちることを確認済み)
-  - 画面の手直し: ボタンのカーソルを pointer にした(globals.css)、エラー文を下に出して画面が動かないようにした(/login と /profile を上寄せ)
-  - 実際の Google での手動確認(人間が実施済み: 紐づけ、ログイン、解除、未紐づけ、同じメールの未紐づけ)
-  - 検証: tsc・lint・Vitest 84 件・build が通過
-  - evaluator は名前では呼べない(このセッションのエージェント一覧にない)ので、general-purpose に evaluator.md を読ませて代役にした。第 1 周: 要修正(中 1、低 2。すべて対応)、第 2 周: 合格。指摘 4(セッションを盗まれた場合、新しいログインなしで Google を紐づけられる)は、その後、人の判断で対策を入れた(下の「セッションを盗まれた場合の対策」)。この対策は、評価者のレビューをまだ受けていない
-  - セッションを盗まれた場合の対策(人の判断で追加): (1) 紐づけにも新しいログイン(5 分以内)を要求する(hooks.before、session.freshAge を 5 分に)。(2) 紐づけたら、root のメールに通知する(databaseHooks.account.create.after)。テストは google-auth.test.ts に 6 件追加(古いセッションでは紐づけ・解除できない、入り直せば紐づけられる、通知の宛先と失敗時の挙動)。設定を壊すと落ちることを確認済み(通知の握りつぶしの try/catch だけは、Better Auth 側が元から守っているので、外しても落ちない)
-- 退会機能(feat/account-deletion。PR #10 でマージ済み): `/profile` の Delete account。他セッション失効 → Go の DELETE /me → Better Auth の deleteUser の順(`src/lib/delete-account.ts`)。Google の紐づけは user と一緒に消える。退会後は root のメールに通知する。`apiRequest` が 204 を扱えるようにした。テスト 17 件追加(101 件)、`deleteUser.enabled` を無効にすると落ちることを確認済み。実機の手動確認は人間が実施済み(退会が通る、Go の profiles と Web の user/account が消える、退会した Google で入れない、同じメールで新規ユーザーになる、5 分超で断られる、Go 停止時はユーザーが残る、退会通知が出る、紐づけ・解除は従来どおり)。evaluator は合格。FRESH_SESSION_SECONDS を 10 分から 5 分にしたので、紐づけ・解除にも効く
-- Vitest のテスト(84 件。ロジックと、Google ログインの方針)
-- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
-- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの ESLint、応答終了時の tsc・lint・test。evaluator はビルド確認とレビューだけ担当
+ログインとプロフィール
+- Better Auth でマジックリンクのログイン(パスワードなし)。JWT は 5 分、payload は最小化。サーバー側の Go 呼び出しは callApi(ブラウザには JWT を出さない)
+- /profile(閲覧): email と name はセッション、bio は Go の GET /me/profile。API が落ちていても email と name は出す
+- /profile/edit(編集): Server Action updateProfile。name は Better Auth の updateUser、bio は Go の PUT /me/profile。変更したフィールドだけ書き、一部失敗でも成功した分は保存される(再送で直る)。全成功なら /profile に移り、一部失敗なら /profile/edit に残る。検証エラーとレート制限のときも入力値が消えない(submittedValues)
+- Google ログイン(紐づけ・解除): マジックリンクで作ったユーザーが root(sub が決まる)。Google は新規登録できず、ログイン済みのユーザーが /profile の「Link Google」で足す任意の手段(自動連携しない、別メールの Google も可、解除できる)。GOOGLE_CLIENT_ID と SECRET を両方設定したときだけ有効。方針は src/lib/google-auth-options.ts。Go は変えない
+- セッションを盗まれた場合の対策(人の判断で追加): 紐づけにも新しいログイン(5 分以内)を要求(hooks.before、session.freshAge)。紐づけたら root のメールに通知(databaseHooks.account.create.after)
+- 退会(/profile の Delete account): 他セッション失効 → Go の DELETE /me → Better Auth の deleteUser の順(src/lib/delete-account.ts)。確認用メールの入力と、5 分以内のログインが要る。退会後は root のメールに通知(after())。Google の紐づけは user と一緒に消える。apiRequest は 204 を扱う
+- サーバーだけが呼べるエンドポイント: /api/auth/delete-user、/update-user、/token、/get-access-token、/refresh-token は HTTP では 403 SERVER_ONLY(Cookie だけで Server Action のルールや JWT の取得を素通りできないように)。Server Action の auth.api.* は通る。/jwks は公開のまま
+- 期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC): src/lib/cleanup.ts と src/app/api/cron/cleanup/route.ts と vercel.json。期限切れの verification と session、1 日以上触られていない rate_limit を消す。jwks と user は残す。CRON_SECRET の Bearer と一致しないと何もしない(未設定は 503)
 
-- E2E(test/e2e ブランチ): e2e/account-flow.spec.ts(ログイン → 編集 → 退会を、本物のブラウザ、Web、Go、Postgres で通す 1 本)。e2e/prepare.mjs が DB を作り直し、playwright.config.ts が Go と Web を別ポート(8180、3100)で起動する。Web は distDir を .next-e2e にして、自分の npm run dev と共存する。メールは EMAIL_TRANSPORT=file(本番では拒否)で書き出し、テストが読む。壊すと落ちることを確認済み(退会で Go のデータを消さない)。CI は別ジョブ(e2e)。本物の Google は含めない
-- @playwright/test を追加。npm install が lock のバインディングを消す不具合が出たので、一時フォルダで lock を生成して取り込んだ(CLAUDE.md の「依存を足すときの注意」)。範囲内のパッチ更新 29 件が混ざっている
+本番向けの守り
+- DB 接続(database-config.ts、db.ts): 本番は sslmode=require 以上がないと起動時にエラー(next build の間は検査しない)。プールは globalThis に 1 つ、最大 10 接続(DATABASE_POOL_MAX)、接続待ち 5 秒、query_timeout 10 秒
+- レート制限(サインイン用のメールだけ。ログイン不要で押せて、押すたびにメールが送られる唯一の場所): IP ごと(Better Auth、1 分に 5 回)と宛先ごと(src/lib/database-rate-limit.ts、10 分に 3 通、制限されても画面は同じ、DB に届かないときは通す)。どちらも Neon の rate_limit テーブルに数える(原子的な SQL)。本番だけ DB 版、開発とテストはメモリ版
+- CSP(src/proxy.ts、src/lib/csp.ts): リクエストごとの nonce、unsafe-inline なし、unsafe-eval は開発だけ、frame-ancestors none。Report-Only で入れ、本番で違反なしを確かめて強制にした(CSP_MODE=enforce)。標準の 404 は静的で nonce が付かず、本番で止められたので、src/app/not-found.tsx で await connection() を呼んで動的にした(本番ビルドを手元で起動して確認済み)
+- 本番で拒否するもの: EMAIL_TRANSPORT の console と file(リンクがログやディスクに残るため)、http の API_BASE_URL
 
-- chore/pre-deploy(1): src/lib/database-config.ts と db.ts。本番では sslmode=require 以上がないと起動時にエラー(next build の間は検査しない)。プールは globalThis に 1 つ、最大 10 接続(DATABASE_POOL_MAX)、接続待ち 5 秒、query_timeout 10 秒、アイドル接続のエラーをログに出す。テストあり(TLS 強制を外すと落ちることを確認済み)
+テストと開発の仕組み
+- Vitest(約 190 件): ロジック、Google ログインの方針(メモリ上の Better Auth)、Server Action の結線、実 Postgres(マイグレーションを専用スキーマに流して外部キー、一意制約、jwks、退会、レート制限、Cron の削除)、本物の HTTP サーバーに対する apiRequest。守りたい設定を壊すと落ちることを、そのつど確認済み。画面のテストは入れない方針
+- E2E(Playwright。e2e/account-flow.spec.ts): ログイン → 編集 → 退会を、本物のブラウザ、Web、Go、Postgres で通す 1 本。e2e/prepare.mjs が DB を作り直し、Go と Web を別ポート(8180、3100)で起動。メールは EMAIL_TRANSPORT=file で書き出して読む。開発サーバーで動くので、本番ビルドだけの挙動は通らない。本物の Google は含めない
+- CI(GitHub Actions): check(lint、テスト、型、ビルド)と e2e の 2 ジョブ。DB を使うテストが SKIP されると失敗にする
+- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)。hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの ESLint、応答終了時の tsc・lint・test
+- npm の不具合: npm install が package-lock から @rolldown/binding-* を消すので、一時フォルダで lock を生成して取り込む(CLAUDE.md の「依存を足すときの注意」)
 
-- chore/pre-deploy(2): レート制限を DB に数える(Vercel はサーバーレスで、メモリでは効かないため)。**対象はサインイン用のメールだけに絞った**(ログイン不要で押せて、押すたびにメールが送られる唯一の場所。プロフィール保存・退会・Google 系の独自の制限は、ログイン済みか別の守りがあるため外した)。auth.ts は rateLimit.storage=database(IP ごと: マジックリンクのプラグイン標準の 1 分に 5 回)。宛先ごとの制限(3 通/10 分。制限されても画面は同じ)は src/lib/database-rate-limit.ts(同じ rate_limit テーブル、1 つの SQL で原子的に数える。DB に届かないときは通す)。本番だけ DB 版、開発とテストはメモリ版。スキーマ(rateLimit)と drizzle/0001 は人が生成・適用した(開発の Neon に適用済み)。実 Postgres のテストで、40 件の同時リクエストで通るのが 5 件、Better Auth の DB 保存が生成されたテーブルで動き 6 回目が 429 になることを確認。壊すと落ちることを確認済み
-
-- chore/pre-deploy(3): CSP(src/proxy.ts、src/lib/csp.ts)。リクエストごとの nonce、unsafe-inline なし、unsafe-eval は開発だけ、frame-ancestors none など。**Report-Only(止めない)モード**で入れた。E2E が、ヘッダーの nonce がページのスクリプトに付いていることと、違反ゼロ(開発用の next-devtools だけ除外)を確かめる。壊すと落ちることを確認済み。単体テストも追加(ポリシー、nonce の一意性、proxy)
-
-- chore/pre-deploy-2(フルレビューの指摘): 本番で EMAIL_TRANSPORT=console を拒否(リンクがログに出るため)、本番で API_BASE_URL が https でなければ拒否、/get-access-token と /refresh-token を HTTP では 403(SERVER_ONLY)に。テスト 3 件追加、各ガードを外すと落ちることを確認済み。見送り: 宛先制限の悪用(許容済み)、storeToken=hashed と encryptOAuthTokens(Better Auth の挙動を未確認で、既存データの移行も要る。デプロイ後に検討)、メール HTML の URL(Better Auth が組み立てる)。デプロイ前の突き合わせ(環境変数 X-1、順序 X-2)は人の作業
-
-- chore/csp-enforce: CSP を Report-Only から強制(CSP_MODE=enforce)に切り替えた。本番で全画面を通して違反が出ないことを人が確認済み(404 と Google 系の画面まで通したかは未確認)。単体テストと E2E のヘッダー名を Content-Security-Policy に変更。問題が出たら CSP_MODE を report-only に戻す(1 行)
-
-- fix/not-found-nonce: CSP を強制にしたあと、本番の 404 でインラインのスクリプトとスタイルが止められた(標準の 404 は静的で nonce が付かない)。src/app/not-found.tsx を追加し、await connection() で動的にした。本番ビルドを手元で起動して、404 のスクリプトとスタイル全部に nonce が付くことを確認済み。E2E は開発サーバーなので捕まえられない(自動テストは未追加)
-
-- chore/cleanup-cron: 期限切れの行を毎日掃除する。src/lib/cleanup.ts(期限切れの verification と session、1 日以上触られていない rate_limit を消す。jwks と user は残す)、src/app/api/cron/cleanup/route.ts(GET。CRON_SECRET の Bearer と一致しないと何もしない。未設定は 503)、vercel.json(毎日 18:00 UTC)。テスト: ハンドラ 4 件、実 Postgres で消すものと残すもの 1 件。秘密の確認を外す、未設定で開ける、期限内の行を消す、rate_limit の保持を短くする、の 4 通りに壊すと落ちることを確認済み。Vercel に CRON_SECRET を入れる(人の作業)。実際の Cron の呼び出しは、デプロイ後に未確認
+本番へのデプロイ(2026-10-09)
+- Web = Vercel + Neon(main ブランチ)、Go と DB = Render。いずれもシンガポール(Vercel の関数のリージョンを北米からシンガポールに変えて、応答が大きく速くなった)
+- 確認済み(人が実施): ログイン(Resend で本番メールが届く)、/profile の bio(Web と Go の JWT/JWKS の連携)、退会と通知メール、Google の紐づけ、IP ごとの制限(別回線では通る)、宛先ごとの制限(同じアドレスに 3 通で止まる)、HSTS とセキュリティヘッダー、CSP を強制にして全画面で違反なし、404、Cron の手動実行(200)
+- README を書いた(日本語。全体像、技術スタックの表、動かし方、環境変数、デプロイ、テスト)
 
 ## 実行中のタスク
-- なし。2026-10-09 に本番へデプロイ済み(Web = Vercel + Neon main、Go と DB = Render。いずれもシンガポールに揃えた。Vercel の関数のリージョンを北米からシンガポールに変えて、応答が大きく速くなった)
-- デプロイ後の確認(人が実施済み): ログイン(Resend で本番メールが届く)、/profile の bio(Web と Go の JWT/JWKS の連携)、退会と通知メール(after())、Google の紐づけ、IP ごとの制限(1 分に 5 回、別回線では通る)、宛先ごとの制限(同じアドレスに 3 通で止まる)、HSTS とセキュリティヘッダー、CSP を強制にして全画面で違反なし、404 の nonce(修正済み)、Cron の手動実行(200、削除 0 件)
-- 未確認: Cron がスケジュールどおり動くか(翌日以降のログで見る)、Render DB の verify-full、Render 無料プランのスリープ明けの遅さ、Google の本番での解除の通し
+- なし
+
+## 未確認
+- Cron がスケジュールどおり動くか(翌日以降のログで見る)
+- Render DB の verify-full(api の DATABASE_URL)
+- Google の解除の本番での通し
 - セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない(退会の部分は evaluator が合格済み)
 
 ## 既知の限界(許容している)
 - Go API にレート制限がない。JWT は退会後も最大 5 分有効で、その間の PUT /me/profile が行を作り直す
-- 宛先ごとの制限は、他人のログインを妨害するのに使える(10 分に 3 通。`+` のエイリアスは別に数える)
+- 宛先ごとの制限は、他人のログインを妨害するのに使える(10 分に 3 通。+ のエイリアスは別に数える)
 - CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない。E2E は開発サーバーで動く。report-to もない。静的なページを足したら、本番ビルドを手元で起動して HTML の nonce を確かめる(CLAUDE.md)
-- Cron の DELETE に件数の上限がない(今の規模では問題なし)、CRON_SECRET の最小長は強制していない
-- 前回のレビューから見送ったもの: encryptOAuthTokens と storeToken: "hashed"(Better Auth の既定値が未確認で、既存データの移行も要る)、メール HTML の URL のエスケープ
+- Cron の DELETE に件数の上限がなく、CRON_SECRET の最小長も強制していない(今の規模では問題なし)
+- 見送ったレビュー指摘: encryptOAuthTokens と storeToken: "hashed"(Better Auth の既定値が未確認で、既存データの移行も要る)、メール HTML の URL のエスケープ(Better Auth が組み立てる)
 - Vercel のプレビューのビルドは失敗する(環境変数を Production だけに入れたため。使わない方針)
 - 無料プランの Render はスリープする。Web の Go 呼び出しは 5 秒で切れるので、スリープ明けの初回に bio が出ないことがある
 
@@ -64,11 +57,3 @@ claude-progress.txt (web)
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
    - 別のオリジンになるので、trustedOrigins の設定が要る。/token の HTTP 拒否(SERVER_ONLY)も見直す
    - 直接呼ぶ設計になると、退会後に JWT で行が復活する窓(最大 5 分)が現実になる。そのときにトゥームストーンを検討する
-
-## このブランチ(chore/tests-and-leftovers)の変更
-- .claude/hooks/guard-pre.sh: git commit と .github/workflows/ の編集のブロックを外した(push、clean、reset --hard は残す)。CLAUDE.md の記述も合わせた
-- src/app/profile/actions.test.ts: deleteMyAccount の結線のテスト(7 件)。宛先、引数、呼び出し順、未ログイン、メール不一致、古いセッション、Go の失敗。実装を壊すと落ちることを確認済み
-- 退会後に残るものの確認(verification と jwks)。結果は CLAUDE.md
-- テスト: auth-postgres.test.ts(実 Postgres で、マイグレーションの SQL を専用スキーマに流し、外部キーの cascade、一意制約、jwks、退会を確認。5 件)、api-http.test.ts(本物の HTTP サーバーに対する apiRequest。6 件)。CI に Postgres の service を足し、SKIP があれば失敗にした。Stop hook も開発 DB があれば自動で渡す。Vitest は 135 件。画面テストは入れない方針、E2E は後回し
-- 評価者の指摘への対応: (1) /api/auth/delete-user と /update-user が HTTP で公開されており、Cookie だけで退会の保護(確認メール、Go のデータ削除、通知)を素通りできた(再現済み)。HTTP 経由は 403 SERVER_ONLY で拒否し、Server Action からの呼び出しは通す(google-auth-options.ts の hooks.before。テストあり、ガードを外すと落ちることを確認済み)。(1') /api/auth/token が Cookie だけで JWT を返していた(CLAUDE.md の「ブラウザには JWT を出さない」に反する。再現済み)。HTTP 経由は同じガードで拒否し、jwtClient も外した。jwks は公開のまま。(2) 検証エラーとレート制限で入力が消える問題: 失敗の戻りにも values を含めた(submittedValues。テストあり)。残りの指摘(宛先ごとのメール制限、CSP と HSTS、db.ts の TLS など)は CLAUDE.md の公開前チェックリストに記録
-- レート制限: Server Action(プロフィール保存、退会)は src/lib/rate-limit.ts と rate-limits.ts(ユーザー単位、メモリ)。Better Auth は AUTH_RATE_LIMIT_RULES(紐づけ、解除、Google ログイン。退会は HTTP 経由では拒否)。テストあり(壊すと落ちることを確認済み)。メモリに数えるので、複数インスタンスでは効きが弱い。DB に数えるなら、スキーマ再生成が要るので人の作業(CLAUDE.md の公開前チェックリスト)
