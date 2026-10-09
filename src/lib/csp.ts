@@ -4,11 +4,12 @@
 
 /**
  * "report-only": the browser only logs what the policy would have blocked, and blocks nothing.
- * "enforce": it blocks. Start in report-only, check that no page logs a violation (the end-to-end
- * test fails on one), then switch to "enforce" here.
+ * "enforce": it blocks. It started in report-only; it was switched to "enforce" once no page
+ * logged a violation in production. A new page that is static (reads no session) gets no nonce and
+ * would be blocked: the end-to-end test fails on a violation, so run it after adding pages.
  */
 export type CspMode = "enforce" | "report-only";
-export const CSP_MODE: CspMode = "report-only";
+export const CSP_MODE: CspMode = "enforce";
 
 export function cspHeaderName(mode: CspMode): string {
   return mode === "enforce" ? "Content-Security-Policy" : "Content-Security-Policy-Report-Only";

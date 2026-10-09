@@ -74,8 +74,8 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
   const bio = `Hello from the end-to-end test ${Date.now()}`;
 
   // Anything the browser says the Content-Security-Policy would block, on any page of the run.
-  // The policy is in report-only mode: nothing is blocked yet, but a violation here means the
-  // page would break the day it is enforced. The only thing left out is Next.js's own development
+  // The policy is enforced, so a violation here is something the browser blocked and a page that
+  // is broken. The only thing left out is Next.js's own development
   // overlay (next-devtools), which exists only under `next dev`, never in a production build.
   const violations: string[] = [];
   await page.exposeFunction("reportCspViolation", (text: string) => violations.push(text));
@@ -95,7 +95,7 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
 
   // The policy is on the page, and Next.js put its nonce on the page's scripts (the browser
   // hides the attribute but keeps the value on the element).
-  const policy = loginResponse?.headers()["content-security-policy-report-only"] ?? "";
+  const policy = loginResponse?.headers()["content-security-policy"] ?? "";
   const nonce = /'nonce-([^']+)'/.exec(policy)?.[1];
   expect(nonce, "the page has a Content-Security-Policy with a nonce").toBeTruthy();
   expect(await page.evaluate(() => document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce ?? "")).toBe(nonce);

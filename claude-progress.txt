@@ -35,6 +35,8 @@ claude-progress.txt (web)
 
 - chore/pre-deploy-2(フルレビューの指摘): 本番で EMAIL_TRANSPORT=console を拒否(リンクがログに出るため)、本番で API_BASE_URL が https でなければ拒否、/get-access-token と /refresh-token を HTTP では 403(SERVER_ONLY)に。テスト 3 件追加、各ガードを外すと落ちることを確認済み。見送り: 宛先制限の悪用(許容済み)、storeToken=hashed と encryptOAuthTokens(Better Auth の挙動を未確認で、既存データの移行も要る。デプロイ後に検討)、メール HTML の URL(Better Auth が組み立てる)。デプロイ前の突き合わせ(環境変数 X-1、順序 X-2)は人の作業
 
+- chore/csp-enforce: CSP を Report-Only から強制(CSP_MODE=enforce)に切り替えた。本番で全画面を通して違反が出ないことを人が確認済み(404 と Google 系の画面まで通したかは未確認)。単体テストと E2E のヘッダー名を Content-Security-Policy に変更。問題が出たら CSP_MODE を report-only に戻す(1 行)
+
 ## 実行中のタスク
 - chore/pre-deploy(デプロイ前の調整)。済み: db.ts の TLS 強制とプール、レート制限の DB 化(下の「完了」)、マジックリンクの宛先ごとの制限。CSP は Report-Only で済み。残り: 本番(Vercel のプレビュー)で違反が出ないか確認して CSP_MODE を enforce にする、HSTS はデプロイ後に確認(CLAUDE.md の公開前チェックリスト)。**本番の Neon にも、デプロイの前に drizzle/0001 の SQL(rate_limit テーブル)を適用する**(人の作業)
 - E2E(web #12)まで、すべてマージ済み。CI(e2e ジョブを含む)は緑

@@ -10,12 +10,12 @@ describe("proxy", () => {
   it("sets the policy on the response with a nonce, and passes the same nonce on to the page", () => {
     const response = proxy(new NextRequest("http://localhost/profile"));
 
-    const policy = headerOf(response, "content-security-policy-report-only");
+    const policy = headerOf(response, "content-security-policy");
     const nonce = /'nonce-([^']+)'/.exec(policy)?.[1];
     expect(nonce).toBeTruthy();
     // Next.js reads the nonce from the request headers; they travel in x-middleware-request-*.
     expect(headerOf(response, "x-middleware-request-x-nonce")).toBe(nonce);
-    expect(headerOf(response, "x-middleware-request-content-security-policy-report-only")).toBe(policy);
+    expect(headerOf(response, "x-middleware-request-content-security-policy")).toBe(policy);
   });
 
   it("gives every request its own nonce", () => {
