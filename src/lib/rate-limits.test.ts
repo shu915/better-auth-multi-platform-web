@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { allowMagicLinkTo, resetMemoryRateLimits } from "@/lib/rate-limits";
+import { addressKey, allowMagicLinkTo, resetMemoryRateLimits } from "@/lib/rate-limits";
 
 beforeEach(() => {
   resetMemoryRateLimits();
@@ -44,11 +44,23 @@ describe("in production", () => {
       expect(await allow("A@Example.com")).toBe(true);
 
       expect(queries.length).toBeGreaterThan(0);
-      expect(queries.join()).toContain("action:magic-link-recipient:a@example.com");
+      expect(queries.join()).toContain(`action:magic-link-recipient:${addressKey("a@example.com")}`);
+      expect(queries.join()).not.toContain("example.com"); // the address itself is never stored
     } finally {
       vi.doUnmock("@/lib/db");
       vi.unstubAllEnvs();
       vi.resetModules();
     }
+  });
+});
+
+describe("addressKey", () => {
+  it("is the same for one address however it is written, and different for another", () => {
+    expect(addressKey("A@Example.com")).toBe(addressKey(" a@example.COM "));
+    expect(addressKey("a@example.com")).not.toBe(addressKey("b@example.com"));
+  });
+
+  it("does not contain the address", () => {
+    expect(addressKey("someone@example.com")).toMatch(/^[0-9a-f]{64}$/);
   });
 });

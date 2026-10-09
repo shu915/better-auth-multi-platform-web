@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createDatabaseRateLimiter } from "@/lib/database-rate-limit";
 import { createRateLimiter, type RateLimiter, type RateLimitRule } from "@/lib/rate-limit";
 
@@ -40,6 +41,14 @@ export const magicLinkRecipientLimiter = limiter("magic-link-recipient", { windo
  * which addresses are being mailed.
  */
 export async function allowMagicLinkTo(email: string): Promise<boolean> {
-  const result = await magicLinkRecipientLimiter.check(email.trim().toLowerCase());
+  const result = await magicLinkRecipientLimiter.check(addressKey(email));
   return result.allowed;
+}
+
+/**
+ * The key for an address: a hash of it in lower case, so the rate_limit table never holds the
+ * address itself. (Better Auth's own rows hold the client IP; that is not hidden here.)
+ */
+export function addressKey(email: string): string {
+  return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
