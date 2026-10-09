@@ -1,107 +1,117 @@
 # better-auth-multi-platform (web)
 
-A sample of one sign-in that several clients can share. The web app signs people in with
-[Better Auth](https://www.better-auth.com), and a separate Go service trusts the tokens it issues.
-Later, desktop (Tauri) and mobile (Expo) clients can use the same Go service without changing it.
+ひとつのログインを、複数のクライアントで共有するためのサンプルです。Web アプリが
+[Better Auth](https://www.better-auth.com) でログインを担当し、別サービスの Go API が、その
+トークンを信頼して使います。将来は、デスクトップ(Tauri)とモバイル(Expo)からも、Go を変えずに
+同じ API を使えるようにする予定です(今は Web のみ)。
 
-This repository is the web side (Next.js). The Go API is in
-[better-auth-multi-platform-api](https://github.com/shu915/better-auth-multi-platform-api).
+このリポジトリは Web 側(Next.js)です。Go API は
+[better-auth-multi-platform-api](https://github.com/shu915/better-auth-multi-platform-api) にあります。
 
-## How it fits together
+## 全体像
 
 ```
-Browser ──▶ Next.js (Vercel) ──▶ Go API (Render)
-              │  Better Auth        │  verifies the JWT with the public keys
-              ▼                     ▼
-          Postgres (Neon)      Postgres (Render)
-        users, sessions,       profiles (bio)
-        signing keys
+ブラウザ ──▶ Next.js (Vercel) ──▶ Go API (Render)
+               │  Better Auth        │  公開鍵で JWT の署名を検証
+               ▼                     ▼
+           Postgres (Neon)      Postgres (Render)
+         ユーザー、セッション、    プロフィール(bio)
+         署名鍵
 ```
 
-- **Sign in by magic link.** No passwords. The user is created by the first magic link, and that
-  user's id is the `sub` of every token.
-- **Google is optional and cannot create users.** A signed-in user can link a Google account from
-  `/profile`, and unlink it. Linking needs a sign-in from the last 5 minutes, and the root email
-  address is notified.
-- **The browser never holds a JWT.** The Next.js server issues a short-lived (5 minutes) token for
-  each call to the Go API (`src/lib/api-server.ts`). The Go API checks the signature with the
-  public keys at `/api/auth/jwks`, plus the issuer and the audience.
-- **Account deletion** (`/profile`): revokes other sessions, deletes the user's data in the Go API,
-  deletes the user, and emails the root address. It asks for the typed email and a recent sign-in.
-- **Endpoints that only our server may call** (`/api/auth/delete-user`, `/update-user`, `/token`,
-  and the Google token endpoints) answer `403` over HTTP, so a session cookie alone cannot skip the
-  rules that live in the Server Actions.
+- **ログインはマジックリンク。** パスワードは使いません。最初のマジックリンクでユーザーが作られ、
+  そのユーザー ID が、すべてのトークンの `sub` になります。
+- **Google は任意で、ユーザーは作れません。** ログイン済みのユーザーが、`/profile` から Google を
+  紐づけ・解除できます。紐づけには、直近 5 分以内のログインが必要で、紐づけたら、元のメール
+  アドレスに通知が届きます。
+- **ブラウザは JWT を持ちません。** Next.js のサーバーが、Go API を呼ぶたびに、短命(5 分)の
+  トークンを発行して付けます(`src/lib/api-server.ts`)。Go は、`/api/auth/jwks` の公開鍵で署名を、
+  あわせて issuer と audience を検証します。
+- **退会**(`/profile`): 他のセッションを失効し、Go 側のデータを消し、ユーザーを削除して、元の
+  メールアドレスに通知します。確認用のメールアドレスの入力と、直近のログインを求めます。
+- **サーバーだけが呼べるエンドポイント**(`/api/auth/delete-user`、`/update-user`、`/token`、
+  Google のトークン系)は、HTTP 経由では `403` を返します。Cookie だけで、Server Action にある
+  ルール(確認入力、Go のデータ削除、通知など)を飛ばせないようにするためです。
 
-## Stack
+## 技術スタック
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Better Auth · Drizzle ·
-Postgres (Neon) · Resend · Vitest · Playwright.
+Postgres (Neon) · Resend · Vitest · Playwright
 
-## Run it locally
+## 手元で動かす
 
-You need Node.js, a Postgres database for this app (a free [Neon](https://neon.tech) project is
-fine), and the Go API running (see the API repository).
+必要なもの: Node.js、この Web 用の Postgres(無料の [Neon](https://neon.tech) で足ります)、
+動いている Go API(API のリポジトリを参照)。
 
 ```bash
 npm ci
-cp .env.example .env.local     # then fill it in; see the table below
-npm run db:migrate             # creates the tables
+cp .env.example .env.local     # 中身を埋める(下の表を参照)
+npm run db:migrate             # テーブルを作る
 npm run dev                    # http://localhost:3000
 ```
 
-In development emails are printed to the terminal (`EMAIL_TRANSPORT=console`), so the sign-in link
-appears in the output of `npm run dev`.
+開発中は、メールを端末に出力します(`EMAIL_TRANSPORT=console`)。ログインのリンクは、
+`npm run dev` の出力に出ます。
 
-### Environment variables
+### 環境変数
 
-| Variable | Notes |
+| 変数 | 説明 |
 |---|---|
-| `BETTER_AUTH_SECRET` | Required. Any long random string, for example `openssl rand -base64 32`. |
-| `BETTER_AUTH_URL` | Public URL of this app, no trailing slash. Must equal the Go API's `AUTH_ISSUER`. Required in production. |
-| `JWT_AUDIENCE` | Must equal the Go API's `AUTH_AUDIENCE`. Defaults to `better-auth-multi-platform-api`. |
-| `API_BASE_URL` | Base URL of the Go API. Defaults to `http://localhost:8080` in development; required, and `https`, in production. |
-| `DATABASE_URL` | Postgres connection string used at runtime. With Neon, the pooled one. In production it needs `sslmode=require` or stronger. |
-| `DATABASE_URL_UNPOOLED` | Used only by `drizzle-kit` (migrations). With Neon, the direct one, without `-pooler`. |
-| `DATABASE_POOL_MAX` | Optional. Connections per instance, 1 to 50, default 10. A small number suits serverless. |
-| `EMAIL_TRANSPORT` | `console` (development) or `resend`. Production accepts only `resend`. |
-| `RESEND_API_KEY`, `EMAIL_FROM` | Needed when `EMAIL_TRANSPORT=resend`. The sender domain must be verified in Resend. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional. Set both to turn Google linking on. Redirect URI: `<BETTER_AUTH_URL>/api/auth/callback/google`. |
-| `CRON_SECRET` | Production. Protects the daily cleanup endpoint (see below). |
+| `BETTER_AUTH_SECRET` | 必須。長いランダムな文字列(例: `openssl rand -base64 32`)。 |
+| `BETTER_AUTH_URL` | このアプリの公開 URL(末尾に `/` を付けない)。Go の `AUTH_ISSUER` と同じにする。本番では必須。 |
+| `JWT_AUDIENCE` | Go の `AUTH_AUDIENCE` と同じにする。既定は `better-auth-multi-platform-api`。 |
+| `API_BASE_URL` | Go API のベース URL。開発では未設定なら `http://localhost:8080`。本番では必須で、`https` のみ。 |
+| `DATABASE_URL` | 実行時に使う Postgres の接続文字列。Neon なら pooled のもの。本番では `sslmode=require` 以上が必要。 |
+| `DATABASE_URL_UNPOOLED` | `drizzle-kit`(マイグレーション)だけが使う。Neon なら `-pooler` の付かない、直接つなぐもの。 |
+| `DATABASE_POOL_MAX` | 任意。1 インスタンスの接続数(1〜50、既定 10)。サーバーレスでは小さい値が向く。 |
+| `EMAIL_TRANSPORT` | `console`(開発)か `resend`。本番では `resend` のみ。 |
+| `RESEND_API_KEY`、`EMAIL_FROM` | `EMAIL_TRANSPORT=resend` のときに必要。送信元のドメインを Resend で認証しておく。 |
+| `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` | 任意。両方設定すると Google の紐づけが有効になる。リダイレクト URI は `<BETTER_AUTH_URL>/api/auth/callback/google`。 |
+| `CRON_SECRET` | 本番。毎日の掃除のエンドポイントを守る(下の「デプロイ」を参照)。 |
 
-## Commands
+## コマンド
 
-| Command | What it does |
+| コマンド | 内容 |
 |---|---|
-| `npm run dev` / `build` / `lint` | Development server, build, lint. |
-| `npm test` | Unit and integration tests (Vitest). The tests that need Postgres run when `TEST_DATABASE_URL` is set. They create a throwaway schema, so point it at a scratch database, never at one with real data. |
-| `npm run test:e2e` | One end-to-end test through a real browser, this app, the Go API and Postgres: sign in, edit the profile, delete the account. Needs the API repository next to this one (`../api`, or set `API_DIR`) and Docker for Postgres. |
-| `npm run db:generate` / `db:migrate` | Create and apply Drizzle migrations. |
+| `npm run dev` / `build` / `lint` | 開発サーバー、ビルド、lint。 |
+| `npm test` | 単体・結合テスト(Vitest)。Postgres が要るテストは、`TEST_DATABASE_URL` を設定すると動く。専用のスキーマを作って消すので、本物のデータがない DB を指すこと。 |
+| `npm run test:e2e` | 本物のブラウザ、この Web、Go API、Postgres を通す E2E を 1 本(ログイン、プロフィール編集、退会)。API のリポジトリが隣(`../api`。`API_DIR` で変更可)にあることと、Postgres 用の Docker が要る。 |
+| `npm run db:generate` / `db:migrate` | Drizzle のマイグレーションの生成と適用。 |
 
-## Deploying
+## デプロイ
 
-This is how the app runs in production: the web on Vercel with Neon, the Go API and its database on
-Render, all in the same region to keep database round trips short.
+本番の構成は、Web を Vercel と Neon、Go API とその DB を Render に置いています。DB への往復を
+短くするため、すべて同じリージョン(シンガポール)にそろえています。
 
-1. Apply the migrations (`npm run db:migrate`) to the production Neon branch, using the unpooled URL.
-2. Deploy the Go API first (a deletion in the web app calls it), then this app.
-3. Set the environment variables above for Production. Pick `Secret` for the keys and URLs that
-   hold passwords.
-4. A daily Vercel Cron (`vercel.json`) calls `/api/cron/cleanup`, which removes expired sign-in
-   links, expired sessions and old rate limit rows. It does nothing unless the request carries
-   `CRON_SECRET`.
+1. 本番の Neon に、`npm run db:migrate` でマイグレーションを適用する(unpooled の URL を使う)。
+2. Go API を先に、次にこのアプリをデプロイする(Web の退会が Go を呼ぶため)。
+3. 上の環境変数を Production に設定する。パスワードを含む値は Secret にする。
+4. Vercel Cron(`vercel.json`)が、毎日 `/api/cron/cleanup` を呼び、期限切れのログインリンク、
+   期限切れのセッション、古いレート制限の行を消す。`CRON_SECRET` が付かないリクエストでは、
+   何もしない。
 
-Notes on what is enforced in production: HTTPS-only API URL, TLS to the database, no `console`
-email transport, a Content-Security-Policy with a per-request nonce (`src/proxy.ts`), and rate
-limits on sign-in emails (per IP, and per address, counted in the database).
+本番で強制しているもの: API の URL は https のみ、DB は TLS、メールは `console` を拒否、リクエスト
+ごとの nonce つき Content-Security-Policy(`src/proxy.ts`)、ログイン用メールのレート制限
+(IP ごとと宛先ごと。DB で数える)。
 
-## Known limits
+## テスト
 
-- The Go API has no rate limit of its own.
-- A token stays valid for up to 5 minutes after the account is deleted, so a request in that window
-  can recreate a profile row.
-- The per-address email limit can be used to keep one person from signing in for a while.
-- Pages that do not read the session are rendered once at build time and would get no nonce, so the
-  enforced CSP would block them. Render such pages per request (see `src/app/not-found.tsx`).
+- **Vitest**: ロジック、Better Auth の設定、Server Action の結線、実 Postgres での外部キーや
+  マイグレーション、HTTP 越しの `apiRequest`、Cron の削除。
+- **Playwright(E2E)**: ログイン、編集、退会を、本物の Go API と Postgres で通す。
+- 守りたい設定を壊すと、テストが落ちることを、そのつど確かめています。
+- CI(GitHub Actions)は、`check`(型、lint、テスト、ビルド)と `e2e` の 2 ジョブ。DB を使う
+  テストが SKIP されると、失敗にします。
+- 画面(コンポーネント)のテストは、入れていません。
 
-More detail for contributors, including the decisions behind these, is in `CLAUDE.md` and
-`claude-progress.txt`.
+## 既知の限界
+
+- Go API に、独自のレート制限はありません。
+- 退会のあとも、トークンは最大 5 分有効で、その間のリクエストが、プロフィールの行を作り直す
+  ことがあります。
+- 宛先ごとのメールの制限は、特定の人のログインを、しばらく妨げるのに使えます。
+- セッションを読まない静的なページは、ビルド時に 1 回だけ作られ、nonce が付かないため、強制中の
+  CSP に止められます。そのようなページは、リクエストごとに描画してください
+  (`src/app/not-found.tsx` を参照)。
+
+設計の判断など、開発者向けの詳しい記述は、`CLAUDE.md` と `claude-progress.txt` にあります。
