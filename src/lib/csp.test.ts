@@ -62,7 +62,7 @@ describe("cspHeaderName", () => {
     expect(cspHeaderName("report-only")).toBe("Content-Security-Policy-Report-Only");
   });
 
-  it("is in report-only mode until the pages are known to run under the policy", () => {
-    expect(CSP_MODE).toBe("report-only");
+  it("is enforced: the browser blocks what the policy does not allow", () => {
+    expect(CSP_MODE).toBe("enforce");
   });
 });
