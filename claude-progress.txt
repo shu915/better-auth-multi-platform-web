@@ -37,6 +37,8 @@ claude-progress.txt (web)
 
 - chore/csp-enforce: CSP を Report-Only から強制(CSP_MODE=enforce)に切り替えた。本番で全画面を通して違反が出ないことを人が確認済み(404 と Google 系の画面まで通したかは未確認)。単体テストと E2E のヘッダー名を Content-Security-Policy に変更。問題が出たら CSP_MODE を report-only に戻す(1 行)
 
+- fix/not-found-nonce: CSP を強制にしたあと、本番の 404 でインラインのスクリプトとスタイルが止められた(標準の 404 は静的で nonce が付かない)。src/app/not-found.tsx を追加し、await connection() で動的にした。本番ビルドを手元で起動して、404 のスクリプトとスタイル全部に nonce が付くことを確認済み。E2E は開発サーバーなので捕まえられない(自動テストは未追加)
+
 ## 実行中のタスク
 - chore/pre-deploy(デプロイ前の調整)。済み: db.ts の TLS 強制とプール、レート制限の DB 化(下の「完了」)、マジックリンクの宛先ごとの制限。CSP は Report-Only で済み。残り: 本番(Vercel のプレビュー)で違反が出ないか確認して CSP_MODE を enforce にする、HSTS はデプロイ後に確認(CLAUDE.md の公開前チェックリスト)。**本番の Neon にも、デプロイの前に drizzle/0001 の SQL(rate_limit テーブル)を適用する**(人の作業)
 - E2E(web #12)まで、すべてマージ済み。CI(e2e ジョブを含む)は緑

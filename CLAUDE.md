@@ -117,7 +117,7 @@ E2E と実 Postgres のテストは、`drizzle/` の SQL を直接流すので�
 - マジックリンクのサインアップを制限するか決める(`disableSignUp`)。今は、メールアドレスを知っていれば誰でも新規登録できる(Google では新規登録できない)
 - 本番の Google Cloud Console に、本番の URL のリダイレクト URI(`https://<本番のドメイン>/api/auth/callback/google`)を登録する
 - メール HTML の URL をエスケープする
-- **CSP は強制にした(2026-10-09)。** 本番で全画面を通し、コンソールに違反が出ないことを確かめてから、`CSP_MODE` を `"enforce"` にした。**今後、静的なページ(セッションを読まないページ)を足すと、nonce が付かず、強制では動かなくなる**(E2E が違反で落ちる)。404(`/_not-found`)は静的になっており、nonce のないスクリプトで壊れる恐れがある。強制のあとに壊れていたら、`not-found` で `await connection()` を呼んで動的にする。違反の報告先(`report-to`)はないので、本番で問題が出たら、ブラウザのコンソールを見る。Vercel Toolbar(`vercel.live`)の違反は、本番には出ない。問題が出たら、`CSP_MODE` を `"report-only"` に戻せば、すぐに止められる(1 行)
+- **CSP は強制にした(2026-10-09)。** 本番で全画面を通し、コンソールに違反が出ないことを確かめてから、`CSP_MODE` を `"enforce"` にした。**今後、静的なページ(セッションを読まないページ)を足すと、nonce が付かず、強制では動かなくなる**(E2E が違反で落ちる)。404 は、標準のままだとビルド時に静的に作られ、nonce が付かず、スクリプトとスタイルが止められる(本番で実際に起きた)。`src/app/not-found.tsx` で `await connection()` を呼んで動的にした。本番ビルドを手元で起動し、`/ab` の HTML のスクリプトとスタイルすべてに、ヘッダーと同じ nonce が付くことを確認済み。E2E は開発サーバーで動くので、この退行は捕まえられない(静的なページを足したら、本番ビルドで同じ確認をする)。違反の報告先(`report-to`)はないので、本番で問題が出たら、ブラウザのコンソールを見る。Vercel Toolbar(`vercel.live`)の違反は、本番には出ない。問題が出たら、`CSP_MODE` を `"report-only"` に戻せば、すぐに止められる(1 行)
 - HSTS: コードでは付けていない。Vercel が自動で付けるはずなので、デプロイ後に `curl -sI https://<本番のドメイン> | grep -i strict-transport` で確認する(付いていなければ、`next.config.ts` の `headers()` に足す)
 - CI の GitHub Actions がタグ指定(`@v7`)で、コミット SHA 固定ではない
 - Server Action の `allowedOrigins`:リバースプロキシの背後で、Server Action が Origin の不一致で断られないか確認する
