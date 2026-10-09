@@ -35,8 +35,23 @@
 
 ## 技術スタック
 
-Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Better Auth · Drizzle ·
-Postgres (Neon) · Resend · Vitest · Playwright
+| 分類 | 技術 | バージョン |
+|---|---|---|
+| フレームワーク | Next.js(App Router) | 16.3 |
+| UI | React | 19.3 |
+| 言語 | TypeScript | 6.0 |
+| スタイル | Tailwind CSS | 4.3 |
+| 認証 | Better Auth | 1.7 |
+| ORM / マイグレーション | Drizzle ORM / drizzle-kit | 0.45 / 0.31 |
+| DB ドライバ | pg(node-postgres) | 8.23 |
+| メール送信 | Resend | 6.32 |
+| 単体・結合テスト | Vitest | 5.0 |
+| E2E テスト | Playwright | 1.64 |
+| Lint | ESLint | 9.39 |
+| ランタイム | Node.js | 22 |
+| DB | Postgres(本番は Neon、CI は 17) | - |
+| ホスティング | Vercel(Web)、Render(Go API と DB) | - |
+| 連携先の Go API | Go、pgx、jwx(別リポジトリ) | 1.27 / 5.11 / 3.3 |
 
 ## 手元で動かす
 
@@ -103,15 +118,5 @@ npm run dev                    # http://localhost:3000
 - CI(GitHub Actions)は、`check`(型、lint、テスト、ビルド)と `e2e` の 2 ジョブ。DB を使う
   テストが SKIP されると、失敗にします。
 - 画面(コンポーネント)のテストは、入れていません。
-
-## 既知の限界
-
-- Go API に、独自のレート制限はありません。
-- 退会のあとも、トークンは最大 5 分有効で、その間のリクエストが、プロフィールの行を作り直す
-  ことがあります。
-- 宛先ごとのメールの制限は、特定の人のログインを、しばらく妨げるのに使えます。
-- セッションを読まない静的なページは、ビルド時に 1 回だけ作られ、nonce が付かないため、強制中の
-  CSP に止められます。そのようなページは、リクエストごとに描画してください
-  (`src/app/not-found.tsx` を参照)。
 
 設計の判断など、開発者向けの詳しい記述は、`CLAUDE.md` と `claude-progress.txt` にあります。
