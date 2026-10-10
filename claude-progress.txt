@@ -1,59 +1,41 @@
 claude-progress.txt (web)
-最終更新: 2026-10-09
-新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
+最終更新: 2026-10-10
+新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
+機能の設計の詳細は docs/design.md、デプロイと公開前チェックは docs/deploy.md。ここには状況だけを書く。
 
 ## 完了したタスク
-ログインとプロフィール
-- Better Auth でマジックリンクのログイン(パスワードなし)。JWT は 5 分、payload は最小化。サーバー側の Go 呼び出しは callApi(ブラウザには JWT を出さない)
-- /profile(閲覧): email と name はセッション、bio は Go の GET /me/profile。API が落ちていても email と name は出す
-- /profile/edit(編集): Server Action updateProfile。name は Better Auth の updateUser、bio は Go の PUT /me/profile。変更したフィールドだけ書き、一部失敗でも成功した分は保存される(再送で直る)。全成功なら /profile に移り、一部失敗なら /profile/edit に残る。検証エラーとレート制限のときも入力値が消えない(submittedValues)
-- Google ログイン(紐づけ・解除): マジックリンクで作ったユーザーが root(sub が決まる)。Google は新規登録できず、ログイン済みのユーザーが /profile の「Link Google」で足す任意の手段(自動連携しない、別メールの Google も可、解除できる)。GOOGLE_CLIENT_ID と SECRET を両方設定したときだけ有効。方針は src/lib/google-auth-options.ts。Go は変えない
-- セッションを盗まれた場合の対策(人の判断で追加): 紐づけにも新しいログイン(5 分以内)を要求(hooks.before、session.freshAge)。紐づけたら root のメールに通知(databaseHooks.account.create.after)
-- 退会(/profile の Delete account): 他セッション失効 → Go の DELETE /me → Better Auth の deleteUser の順(src/lib/delete-account.ts)。確認用メールの入力と、5 分以内のログインが要る。退会後は root のメールに通知(after())。Google の紐づけは user と一緒に消える。apiRequest は 204 を扱う
-- サーバーだけが呼べるエンドポイント: /api/auth/delete-user、/update-user、/token、/get-access-token、/refresh-token は HTTP では 403 SERVER_ONLY(Cookie だけで Server Action のルールや JWT の取得を素通りできないように)。Server Action の auth.api.* は通る。/jwks は公開のまま
-- 期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC): src/lib/cleanup.ts と src/app/api/cron/cleanup/route.ts と vercel.json。期限切れの verification と session、1 日以上触られていない rate_limit を消す。jwks と user は残す。CRON_SECRET の Bearer と一致しないと何もしない(未設定は 503)
-
-本番向けの守り
-- DB 接続(database-config.ts、db.ts): 本番は sslmode=require 以上がないと起動時にエラー(next build の間は検査しない)。プールは globalThis に 1 つ、最大 10 接続(DATABASE_POOL_MAX)、接続待ち 5 秒、query_timeout 10 秒
-- レート制限(サインイン用のメールだけ。ログイン不要で押せて、押すたびにメールが送られる唯一の場所): IP ごと(Better Auth、1 分に 5 回)と宛先ごと(src/lib/database-rate-limit.ts、10 分に 3 通、制限されても画面は同じ、DB に届かないときは通す)。どちらも Neon の rate_limit テーブルに数える(原子的な SQL)。本番だけ DB 版、開発とテストはメモリ版
-- CSP(src/proxy.ts、src/lib/csp.ts): リクエストごとの nonce、unsafe-inline なし、unsafe-eval は開発だけ、frame-ancestors none。Report-Only で入れ、本番で違反なしを確かめて強制にした(CSP_MODE=enforce)。標準の 404 は静的で nonce が付かず、本番で止められたので、src/app/not-found.tsx で await connection() を呼んで動的にした(本番ビルドを手元で起動して確認済み)
-- 本番で拒否するもの: EMAIL_TRANSPORT の console と file(リンクがログやディスクに残るため)、http の API_BASE_URL
-
-テストと開発の仕組み
-- Vitest(約 190 件): ロジック、Google ログインの方針(メモリ上の Better Auth)、Server Action の結線、実 Postgres(マイグレーションを専用スキーマに流して外部キー、一意制約、jwks、退会、レート制限、Cron の削除)、本物の HTTP サーバーに対する apiRequest。守りたい設定を壊すと落ちることを、そのつど確認済み。画面のテストは入れない方針
-- E2E(Playwright。e2e/account-flow.spec.ts): ログイン → 編集 → 退会を、本物のブラウザ、Web、Go、Postgres で通す 1 本。e2e/prepare.mjs が DB を作り直し、Go と Web を別ポート(8180、3100)で起動。メールは EMAIL_TRANSPORT=file で書き出して読む。開発サーバーで動くので、本番ビルドだけの挙動は通らない。本物の Google は含めない
-- CI(GitHub Actions): check(lint、テスト、型、ビルド)と e2e の 2 ジョブ。DB を使うテストが SKIP されると失敗にする
-- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)。hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの ESLint、応答終了時の tsc・lint・test
-- npm の不具合: npm install が package-lock から @rolldown/binding-* を消すので、一時フォルダで lock を生成して取り込む(CLAUDE.md の「依存を足すときの注意」)
-
-本番へのデプロイ(2026-10-09)
-- Web = Vercel + Neon(main ブランチ)、Go と DB = Render。いずれもシンガポール(Vercel の関数のリージョンを北米からシンガポールに変えて、応答が大きく速くなった)
-- 確認済み(人が実施): ログイン(Resend で本番メールが届く)、/profile の bio(Web と Go の JWT/JWKS の連携)、退会と通知メール、Google の紐づけ、IP ごとの制限(別回線では通る)、宛先ごとの制限(同じアドレスに 3 通で止まる)、HSTS とセキュリティヘッダー、CSP を強制にして全画面で違反なし、404、Cron の手動実行(200)
-- README を書いた(日本語。全体像、技術スタックの表、動かし方、環境変数、デプロイ、テスト)
+- ログインとプロフィール: マジックリンク、/profile(閲覧)、/profile/edit(Server Action で name と bio を保存)
+- Google ログイン(任意。紐づけ・解除、新規登録不可)と、セッション盗難の対策(5 分ルール、通知メール)
+- 退会(Go の DELETE /me → deleteUser、通知メール)、サーバーだけが呼べるエンドポイント(HTTP は 403 SERVER_ONLY)
+- 期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC)
+- 本番向けの守り: DB 接続、レート制限(DB に数える)、CSP(強制)、本番で拒否する設定
+- テスト: Vitest(約 190 件)、E2E(Playwright 1 本)、CI(check と e2e の 2 ジョブ)、evaluator と hooks
+- 本番デプロイ(2026-10-09): Vercel + Neon と Render(いずれもシンガポール)。ログイン、プロフィール、退会、Google 紐づけ、レート制限、HSTS、CSP、Cron の手動実行を人が確認済み
+- README を書いた
+- CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
 
 ## 実行中のタスク
-- なし
+- なし(ブランチ docs/slim-claude-md に、CLAUDE.md の整理が未コミットで載っている)
 
 ## 未確認
-- Cron がスケジュールどおり動くか(翌日以降のログで見る)
+- Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
 - Render DB の verify-full(api の DATABASE_URL)
 - Google の解除の本番での通し
-- セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない(退会の部分は evaluator が合格済み)
+- セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない
 
 ## 既知の限界(許容している)
 - Go API にレート制限がない。JWT は退会後も最大 5 分有効で、その間の PUT /me/profile が行を作り直す
-- 宛先ごとの制限は、他人のログインを妨害するのに使える(10 分に 3 通。+ のエイリアスは別に数える)
-- CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない。E2E は開発サーバーで動く。report-to もない。静的なページを足したら、本番ビルドを手元で起動して HTML の nonce を確かめる(CLAUDE.md)
-- Cron の DELETE に件数の上限がなく、CRON_SECRET の最小長も強制していない(今の規模では問題なし)
-- 見送ったレビュー指摘: encryptOAuthTokens と storeToken: "hashed"(Better Auth の既定値が未確認で、既存データの移行も要る)、メール HTML の URL のエスケープ(Better Auth が組み立てる)
-- Vercel のプレビューのビルドは失敗する(環境変数を Production だけに入れたため。使わない方針)
-- 無料プランの Render はスリープする。Web の Go 呼び出しは 5 秒で切れるので、スリープ明けの初回に bio が出ないことがある
+- 宛先ごとの制限は、他人のログインを妨害するのに使える(+ のエイリアスは別に数える)
+- CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない
+- Cron の DELETE に件数の上限がなく、CRON_SECRET の最小長も強制していない
+- 見送ったレビュー指摘: encryptOAuthTokens と storeToken: "hashed"、メール HTML の URL のエスケープ
+- Vercel のプレビューのビルドは失敗する(環境変数が Production だけ。使わない方針)
+- 無料プランの Render はスリープする。スリープ明けの初回は 5 秒で切れて bio が出ないことがある
 
 ## これからのタスク(順番)
-1. main にタグ v0.2.0 を付ける(web と api の両方。api を先に)
-2. 翌日以降、Vercel のログで Cron(`[cleanup] removed`)が動いたか確認する
-3. verify-full で Render DB に繋がるか試す(api の DATABASE_URL)
-4. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
+1. single-db モードを先に作る(Tauri / Expo より前)
+2. verify-full で Render DB に繋がるか試す
+3. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
-   - 別のオリジンになるので、trustedOrigins の設定が要る。/token の HTTP 拒否(SERVER_ONLY)も見直す
+   - 別オリジンになるので trustedOrigins が要る。/token の HTTP 拒否(SERVER_ONLY)も見直す
    - 直接呼ぶ設計になると、退会後に JWT で行が復活する窓(最大 5 分)が現実になる。そのときにトゥームストーンを検討する
