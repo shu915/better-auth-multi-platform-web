@@ -19,7 +19,7 @@ Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / 
 ## 守るルール(特に壊しやすいもの)
 - **DB は Go と共有している(single-db)。** Better Auth のテーブルはこの Web の `drizzle/` が作る。Go の `profiles` が `user(id)` を外部キー(`ON DELETE CASCADE`)で参照する。マイグレーションの順序は **この Web が先、Go の goose が後**。退会は `user` の行を消すだけで、Go を呼ばない(外部キーが `profiles` を消す)
 - JWT をブラウザに出さない。Go を呼ぶのは `callApi`(サーバー)だけ
-- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す
+- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す。JWT は `/token` からだけ出す(`src/lib/jwt-plugin.ts`。`get-session` 用のヘッダーは切ってある)
 - 紐づけ・解除・退会は「5 分以内のログイン」(`FRESH_SESSION_SECONDS`)を要求する
 - **静的なページ(セッションを読まないページ)を足すと CSP の nonce が付かず止まる。** 足したら本番ビルドを手元で起動して確かめる(E2E は開発サーバーなので捕まえられない)。詳細は docs/design.md
 - 本番の `EMAIL_TRANSPORT` は `resend` だけ。本番の `DATABASE_URL` は `sslmode=require` 以上

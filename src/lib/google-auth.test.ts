@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
-import { jwt, magicLink } from "better-auth/plugins";
+import { magicLink } from "better-auth/plugins";
+import { jwtPlugin } from "@/lib/jwt-plugin";
 import {
   FRESH_SESSION_SECONDS,
   googleAuthOptions,
@@ -89,9 +90,7 @@ function createTestAuth(
         },
       }),
       // Same shape as auth.ts, so the /token and /jwks endpoints can be tested.
-      jwt({
-        jwt: { issuer: BASE, audience: "api.test", expirationTime: "5m", definePayload: () => ({}) },
-      }),
+      jwtPlugin({ issuer: BASE, audience: "api.test" }),
     ],
     ...options,
     // Better Auth's limiter is on only in production by default; this turns it on.
@@ -509,6 +508,21 @@ describe("endpoints that only our Server Actions may call", () => {
     expect(res.status).toBe(403);
     expect(text).toContain("SERVER_ONLY");
     expect(text).not.toMatch(/eyJ/); // a JWT starts with this
+  });
+
+  it("sends no JWT header with get-session", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/get-session`, { headers: { cookie, origin: BASE } }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("set-auth-jwt")).toBeNull();
+    expect((res.headers.get("access-control-expose-headers") ?? "").toLowerCase()).not.toContain(
+      "set-auth-jwt",
+    );
   });
 
   it("still issues the JWT to our own server code, and still serves the public keys over HTTP", async () => {
