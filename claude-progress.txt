@@ -16,7 +16,7 @@ claude-progress.txt (web)
 - guard-pre.sh の any 検出を直した(2026-10-19): 正規表現の括弧が閉じておらず、`: any =` や `(x: any)` が通っていた。`any[]` と `Map<string, any>` も止める
 
 ## 実行中のタスク
-- なし
+- Expo(mobile)対応(ブランチ feature/expo-native-client): auth.ts に expo() と bearer()、trustedOrigins に betterauthmulti://、/token は Bearer だけ(Cookie なし)のとき HTTP でも通す。スパイク(spike/expo-auth、モバイルは spike/auth-flow)で、iOS シミュレータと Android エミュレータの両方で、ディープリンク → JWT → Go の GET /me まで確認済み。実機は未確認。モバイルの本実装は mobile リポジトリの feature/auth-flow
 
 ## 未確認
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
@@ -25,6 +25,7 @@ claude-progress.txt (web)
 - セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない
 
 ## 既知の限界(許容している)
+- ネイティブ(Expo)のマジックリンクは、独自スキーム(betterauthmulti://)のディープリンクにセッションの Cookie を載せて戻す。端末の別のアプリも同じスキームを登録できる(docs/design.md)。本番なら Universal Links / App Links か、1 回限りのコード交換にする
 - Go API にレート制限がない。JWT は退会後も最大 5 分有効で、その間の PUT /me/profile が行を作り直す
 - 宛先ごとの制限は、他人のログインを妨害するのに使える(+ のエイリアスは別に数える)
 - CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない

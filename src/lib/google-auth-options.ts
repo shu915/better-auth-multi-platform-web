@@ -22,8 +22,9 @@ export type LinkedNotice = { to: string; provider: string };
 // stolen session or a script on the page could otherwise take a JWT and call the Go API directly,
 // without the fresh-login check that the account actions need. /jwks (the public keys the Go
 // API fetches) stays public. /get-access-token and /refresh-token would hand out the stored Google
-// tokens to anyone with the cookie; nothing here uses them. When a desktop or mobile client has to call the Go API directly,
-// this is the rule to revisit.
+// tokens to anyone with the cookie; nothing here uses them.
+// A native app (Expo) has no server of ours to call the Go API for it, so it gets its own JWT from
+// /token, and only that endpoint has an exception: see isBearerOnly.
 const SERVER_ONLY_PATHS = new Set([
   "/delete-user",
   "/update-user",
@@ -32,14 +33,45 @@ const SERVER_ONLY_PATHS = new Set([
   "/refresh-token",
 ]);
 
+// Native apps may call /token over HTTP when the request is authenticated by a bearer token and
+// by nothing else: an Authorization: Bearer header and NO Cookie header.
+// Both parts matter: the bearer plugin ignores an invalid bearer token and falls back to the
+// request's own cookie, so a bearer header alone would prove nothing. With no Cookie header, success
+// needs a valid signed session token in the header.
+// This relies on the signed token appearing nowhere a page can read (native-clients.ts) and on the
+// JWT being issued nowhere else (jwt-plugin.ts). The tests under "endpoints that only our Server
+// Actions may call" check each of these.
+// Same test as the bearer plugin's own: the scheme "bearer " (any case) and a non-empty token.
+function hasBearer(request: Request): boolean {
+  const authorization = request.headers.get("authorization") ?? "";
+  return authorization.slice(0, 7).toLowerCase() === "bearer " && authorization.slice(7).trim() !== "";
+}
+
+export function isBearerOnly(request: Request): boolean {
+  return hasBearer(request) && !request.headers.get("cookie");
+}
+
 // Runs before every Better Auth endpoint. Two jobs: refuse the server-only endpoints over HTTP,
 // and make linking need a recent sign-in, like unlinking already does. No session at all is left
 // to the endpoint's own check, which answers 401.
 const guardAccountEndpoints = createAuthMiddleware(async (ctx) => {
   if (SERVER_ONLY_PATHS.has(ctx.path) && ctx.request !== undefined) {
+    // The one exception: /token for a bearer-only request (a native app). Everything else on the
+    // list stays server-only, bearer or not.
+    if (ctx.path === "/token" && isBearerOnly(ctx.request)) return;
     throw APIError.from("FORBIDDEN", {
       message: "This action is not available over HTTP",
       code: "SERVER_ONLY",
+    });
+  }
+  // A bearer token is accepted at /token only. This guard runs before the bearer plugin turns the
+  // header into a session, so checks made here on the session (the fresh-login check below) would
+  // not see it. Refusing the header outside /token keeps those checks meaningful. Native apps send
+  // their cookie as a Cookie header.
+  if (ctx.request !== undefined && ctx.path !== "/token" && hasBearer(ctx.request)) {
+    throw APIError.from("FORBIDDEN", {
+      message: "A bearer token is only accepted at /token",
+      code: "BEARER_ONLY_FOR_TOKEN",
     });
   }
   if (ctx.path !== "/link-social") return;

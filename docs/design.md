@@ -52,8 +52,17 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
 - 成功したら root のメールに通知(`notifyDeleted`。宛先は `deleteAccount` がセッションのメールに決める。入力した確認用メールではない。`after()` で非同期、失敗しても退会は成功)。盗まれたセッションでの退会に本人が気づくため
 - `user.deleteUser.enabled` は `google-auth-options.ts` にあり、`google-auth.test.ts` の「account deletion」が守る。Cookie を消すため `auth.ts` の plugins の最後に `nextCookies()` を入れてある
 - **HTTP 経由では拒否するエンドポイント:** `/api/auth/delete-user`、`/update-user`、`/token`(と `/get-access-token`、`/refresh-token`)。確認用メール・Go のデータ削除・通知・名前の検証は Server Action にしかないので、Cookie だけで素通りされる(再現済み)。`/token` は、Cookie だけで JWT を取れると、盗まれたセッションや画面上のスクリプトが、5 分の新しいログイン確認を通らずに Go の `DELETE /me` などを直接呼べるため。`google-auth-options.ts` の `hooks.before` が、受信リクエストのある呼び出し(HTTP)だけ 403 `SERVER_ONLY` で断る。Server Action の `auth.api.*` はリクエストがないので通る。`callApi` は `auth.api.getToken` を使うので影響しない。公開鍵の `/api/auth/jwks` は Go が取りに来るので公開のまま
-- **JWT そのものも、`get-session` から出さない。** JWT プラグインは、既定で、`get-session` の応答に有効な JWT を `set-auth-jwt` ヘッダーで付ける。Cookie を持つスクリプト(XSS)が `get-session` を呼べば、そのヘッダーから JWT を読めて、`/token` の `SERVER_ONLY` を迂回できる(再現済み)。`disableSettingJwtHeader: true` で止める(`src/lib/jwt-plugin.ts`。`auth.ts` とテストで共通)。守っているテスト: `google-auth.test.ts` の「does not hand a JWT to a script through get-session」(設定を外すと落ちることを確認した)
-- デスクトップやモバイルが Go を直接呼ぶ構成にするときは、このルールを見直す(専用エンドポイントにする、など)。`sendDeleteAccountVerification` や `changeEmail` を有効にするときも、ガードとテスト(`/delete-user/callback` など)を見直す
+- **例外: `/token` は、ネイティブアプリ(Expo)のために、「`Authorization: Bearer <セッショントークン>` があり、かつ `Cookie` ヘッダーがない」リクエストだけ HTTP でも通す**(`google-auth-options.ts` の `isBearerOnly`、`auth.ts` の `bearer()`)。ネイティブには、Go の JWT を代わりに発行してくれる自分たちのサーバーがないため。他の 4 つ(`/delete-user`、`/update-user`、`/get-access-token`、`/refresh-token`)は、Bearer があっても断る
+  - **ルール 1: Bearer だけで足りるとしない。** `bearer()` は、有効な Bearer をセッションの Cookie に置き換えるが、無効な Bearer は無視して、リクエスト自身の Cookie を使う。だから、`Cookie` ヘッダーがないことも条件にする
+  - **ルール 2: Bearer は署名付きの値だけ。** `bearer({ requireSignature: true })`(`src/lib/native-clients.ts`)。一部のレスポンスは、本文に生のセッショントークンを含むので、それは Bearer として受け付けない
+  - **ルール 3: `set-auth-token` ヘッダーは出さない。** `bearer()` が、セッションの Cookie を設定するレスポンスに付けるヘッダーを、`onResponse` で取り除く(ネイティブは、Expo のクライアントが保存する Cookie を使うので、要らない)
+  - **ルール 4: JWT は `/token` からだけ出す。** JWT プラグインの `get-session` 用のヘッダー(`set-auth-jwt`)は切ってある(`src/lib/jwt-plugin.ts`。`auth.ts` とテストで共通)
+  - **ルール 5: Bearer は `/token` 以外では受け付けない**(`BEARER_ONLY_FOR_TOKEN`)。ガード(`hooks.before`)は、`bearer()` が Bearer をセッションに変換するより前に走るので、ガードの中でセッションを見る検査(`/link-social` の 5 分ルール)が、Bearer のリクエストでは働かない。ヘッダーそのものを `/token` 以外で拒否して、検査を有効に保つ
+  - **既知の限界(未対応): 独自スキームのディープリンク。** マジックリンクの後、サーバーは `betterauthmulti://…?cookie=<署名付きセッション>` にリダイレクトする(`expo()` プラグイン)。独自スキームは、端末の別のアプリも登録できるので、本番で使うなら、Universal Links / App Links か、1 回限りのコードの交換にする。サンプルの範囲では未対応
+  - ネイティブ側は、`authClient.token()` ではなく、自前の `fetch`(`credentials: "omit"`、Bearer だけ)で呼ぶ。Expo のクライアントは、保存した Cookie を、自分のリクエストすべてに Cookie ヘッダーとして付けるため(モバイルのリポジトリ `src/lib/token.ts`)
+  - 守っているテスト(`google-auth.test.ts` の「endpoints that only our Server Actions may call」): 署名付きの Bearer だけなら JWT が出る / Bearer + Cookie は断る / 有効でない Bearer は 200 にならない / 他の 4 つは Bearer があっても断る / 生のトークンは Bearer として受け付けない / `set-auth-token` と `set-auth-jwt` のヘッダーが出ない / 古いセッションの Bearer では `/link-social` できない。それぞれのルールを外すと、対応するテストが落ちることを確認した
+  - 有効期間は 5 分のまま(`expirationTime`)。ネイティブは、期限が切れる前に取り直す
+- Server Action にしかない検証を、ネイティブにも使わせるには、専用のエンドポイントを足す(まだない。名前の保存と退会は、ネイティブ用にサーバー側で検証しながら受ける形になる)。`sendDeleteAccountVerification` や `changeEmail` を有効にするときも、ガードとテスト(`/delete-user/callback` など)を見直す
 - 退会後に残るもの(`deleteUser` が消すのは user、session、account だけ):
   - `jwks`: 全ユーザー共通の署名鍵で個人のデータではない。消してはいけない
   - `verification`: 未使用のマジックリンクの行が残りうる(`value` に email)。有効期限は既定 5 分なので、最大 5 分分で期限が切れたら無効
