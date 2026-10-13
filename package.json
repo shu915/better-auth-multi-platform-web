@@ -15,6 +15,7 @@
     "db:schema": "npx auth@latest generate --config src/lib/auth.ts --output src/db/schema.ts -y"
   },
   "dependencies": {
+    "@better-auth/expo": "^1.7.7",
     "better-auth": "^1.7.7",
     "drizzle-orm": "^0.45.3",
     "next": "16.3.8",
