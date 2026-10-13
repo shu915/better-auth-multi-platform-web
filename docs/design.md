@@ -52,6 +52,7 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
 - 成功したら root のメールに通知(`notifyDeleted`。宛先は `deleteAccount` がセッションのメールに決める。入力した確認用メールではない。`after()` で非同期、失敗しても退会は成功)。盗まれたセッションでの退会に本人が気づくため
 - `user.deleteUser.enabled` は `google-auth-options.ts` にあり、`google-auth.test.ts` の「account deletion」が守る。Cookie を消すため `auth.ts` の plugins の最後に `nextCookies()` を入れてある
 - **HTTP 経由では拒否するエンドポイント:** `/api/auth/delete-user`、`/update-user`、`/token`(と `/get-access-token`、`/refresh-token`)。確認用メール・Go のデータ削除・通知・名前の検証は Server Action にしかないので、Cookie だけで素通りされる(再現済み)。`/token` は、Cookie だけで JWT を取れると、盗まれたセッションや画面上のスクリプトが、5 分の新しいログイン確認を通らずに Go の `DELETE /me` などを直接呼べるため。`google-auth-options.ts` の `hooks.before` が、受信リクエストのある呼び出し(HTTP)だけ 403 `SERVER_ONLY` で断る。Server Action の `auth.api.*` はリクエストがないので通る。`callApi` は `auth.api.getToken` を使うので影響しない。公開鍵の `/api/auth/jwks` は Go が取りに来るので公開のまま
+- **JWT そのものも、`get-session` から出さない。** JWT プラグインは、既定で、`get-session` の応答に有効な JWT を `set-auth-jwt` ヘッダーで付ける。Cookie を持つスクリプト(XSS)が `get-session` を呼べば、そのヘッダーから JWT を読めて、`/token` の `SERVER_ONLY` を迂回できる(再現済み)。`disableSettingJwtHeader: true` で止める(`src/lib/jwt-plugin.ts`。`auth.ts` とテストで共通)。守っているテスト: `google-auth.test.ts` の「does not hand a JWT to a script through get-session」(設定を外すと落ちることを確認した)
 - デスクトップやモバイルが Go を直接呼ぶ構成にするときは、このルールを見直す(専用エンドポイントにする、など)。`sendDeleteAccountVerification` や `changeEmail` を有効にするときも、ガードとテスト(`/delete-user/callback` など)を見直す
 - 退会後に残るもの(`deleteUser` が消すのは user、session、account だけ):
   - `jwks`: 全ユーザー共通の署名鍵で個人のデータではない。消してはいけない

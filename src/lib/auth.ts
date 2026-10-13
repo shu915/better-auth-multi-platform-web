@@ -2,11 +2,12 @@ import { after } from "next/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
-import { jwt, magicLink } from "better-auth/plugins";
+import { magicLink } from "better-auth/plugins";
 import { db } from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 import { googleAuthOptions } from "@/lib/google-auth-options";
 import { resolveGoogleCredentials } from "@/lib/google-oauth";
+import { jwtPlugin } from "@/lib/jwt-plugin";
 import { linkedAccountEmail } from "@/lib/linked-accounts";
 import { allowMagicLinkTo } from "@/lib/rate-limits";
 import * as schema from "@/db/schema";
@@ -77,16 +78,7 @@ export const auth = betterAuth({
         });
       },
     }),
-    jwt({
-      jwt: {
-        issuer: baseURL,
-        audience,
-        expirationTime: "5m",
-        // By default the whole user record is embedded; keep only the standard
-        // claims (iat, iss, aud, exp) plus `sub` (the user id, set by Better Auth).
-        definePayload: () => ({}),
-      },
-    }),
+    jwtPlugin({ issuer: baseURL, audience }),
     // Lets a Server Action (deleteAccount) clear the session cookie. Must stay last.
     nextCookies(),
   ],

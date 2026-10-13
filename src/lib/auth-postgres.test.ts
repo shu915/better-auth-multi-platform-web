@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { jwt, magicLink } from "better-auth/plugins";
+import { magicLink } from "better-auth/plugins";
 import { count, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "@/db/schema";
 import { cleanupExpired } from "@/lib/cleanup";
 import { googleAuthOptions } from "@/lib/google-auth-options";
+import { jwtPlugin } from "@/lib/jwt-plugin";
 
 // These run against a real Postgres, with the real tables from drizzle/ (the migrations are
 // applied here), so the foreign keys, the unique constraints and the jwks table are the real
@@ -68,9 +69,7 @@ describe.runIf(Boolean(url))("Better Auth on a real Postgres", () => {
             tokens.set(email, token);
           },
         }),
-        jwt({
-          jwt: { issuer: BASE, audience: AUDIENCE, expirationTime: "5m", definePayload: () => ({}) },
-        }),
+        jwtPlugin({ issuer: BASE, audience: AUDIENCE }),
       ],
       ...googleAuthOptions(null, { notifyLinked: async () => {} }),
       // As auth.ts does: counts in the database. Only the production-only switch is turned on here.
