@@ -15,10 +15,10 @@ const now = new Date("2026-10-08T12:00:00Z");
 const fresh = new Date(now.getTime() - 60 * 1000);
 const stale = new Date(now.getTime() - (FRESH_SESSION_SECONDS + 1) * 1000);
 
-function setup(failAt?: "revoke" | "api" | "user" | "notify") {
+function setup(failAt?: "revoke" | "user" | "notify") {
   const calls: string[] = [];
   const step =
-    (name: string, key: "revoke" | "api" | "user" | "notify") => async () => {
+    (name: string, key: "revoke" | "user" | "notify") => async () => {
       calls.push(name);
       if (failAt === key) throw new Error(`${name} failed`);
     };
@@ -26,7 +26,6 @@ function setup(failAt?: "revoke" | "api" | "user" | "notify") {
     calls,
     deps: {
       revokeOtherSessions: step("revoke", "revoke"),
-      deleteApiData: step("api", "api"),
       deleteUser: step("user", "user"),
       notifyDeleted: step("notify", "notify"),
     },
@@ -41,10 +40,10 @@ const input = {
 };
 
 describe("deleteAccount", () => {
-  it("revokes other sessions, then deletes the Go data, then the user", async () => {
+  it("revokes other sessions, then deletes the user", async () => {
     const { calls, deps } = setup();
     expect(await deleteAccount(input, deps)).toEqual({ ok: true });
-    expect(calls).toEqual(["revoke", "api", "user", "notify"]);
+    expect(calls).toEqual(["revoke", "user", "notify"]);
   });
 
   it("calls nothing when the confirmation email differs", async () => {
@@ -66,7 +65,7 @@ describe("deleteAccount", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it("calls nothing for a stale session, so the Go data is never deleted without the user", async () => {
+  it("calls nothing for a stale session, so the other sessions are not revoked for nothing", async () => {
     const { calls, deps } = setup();
     const result = await deleteAccount(
       { ...input, sessionCreatedAt: stale },
@@ -74,17 +73,6 @@ describe("deleteAccount", () => {
     );
     expect(result).toEqual({ ok: false, reason: "not_fresh" });
     expect(calls).toEqual([]);
-  });
-
-  it("stops before deleting the user when the Go API fails", async () => {
-    const { calls, deps } = setup("api");
-    const result = await deleteAccount(input, deps);
-    expect(result).toMatchObject({
-      ok: false,
-      reason: "failed",
-      step: "delete-api-data",
-    });
-    expect(calls).toEqual(["revoke", "api"]);
   });
 
   it("stops before touching any data when revoking sessions fails", async () => {
@@ -119,11 +107,11 @@ describe("deleteAccount", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { calls, deps } = setup("notify");
     expect(await deleteAccount(input, deps)).toEqual({ ok: true });
-    expect(calls).toEqual(["revoke", "api", "user", "notify"]);
+    expect(calls).toEqual(["revoke", "user", "notify"]);
   });
 
   it("sends no notice when any earlier step fails", async () => {
-    for (const failAt of ["revoke", "api", "user"] as const) {
+    for (const failAt of ["revoke", "user"] as const) {
       const { calls, deps } = setup(failAt);
       await deleteAccount(input, deps);
       expect(calls).not.toContain("notify");
@@ -139,7 +127,7 @@ describe("deleteAccount", () => {
     });
     const retry = setup();
     expect(await deleteAccount(input, retry.deps)).toEqual({ ok: true });
-    expect(retry.calls).toEqual(["revoke", "api", "user", "notify"]);
+    expect(retry.calls).toEqual(["revoke", "user", "notify"]);
   });
 });
 

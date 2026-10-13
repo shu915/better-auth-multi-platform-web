@@ -1,16 +1,32 @@
 # デプロイと公開前チェック
 
 ## デプロイ先
-- Web: **Vercel + Neon**(サーバーレス)。API(Go)とその DB は **Render**。Go は Vercel の https の JWKS(`<本番の URL>/api/auth/jwks`)を取りに来るので、Go の `AUTH_ISSUER` は Vercel の本番 URL にする
-- Neon は **pooled URL**(ホスト名に `-pooler`)。インスタンスの数だけプールが増えるので `DATABASE_POOL_MAX` は小さく(3 前後)。マイグレーションは `DATABASE_URL_UNPOOLED`
+- Web: **Vercel**(サーバーレス)。API(Go)と **DB(Go と共有する 1 つ)は Render**。Neon はやめた(single-db)。Go は Vercel の https の JWKS(`<本番の URL>/api/auth/jwks`)を取りに来るので、Go の `AUTH_ISSUER` は Vercel の本番 URL にする
+- `DATABASE_URL` は Render の DB(`sslmode=require` 以上)。Vercel からは外部 URL(Render の DB の設定で、外部からの接続を許可する)。Render の Postgres には PgBouncer のプーラーが組み込まれている(**無料プランにはない**。DB の Info ページで有効にする。プール経由はポート 6432、直接は 5432。トランザクション単位のプールで、設定は変えられない)。インスタンスの数だけプールが増える Vercel では、プーラー経由の URL(6432)を `DATABASE_URL` にし、`DATABASE_POOL_MAX` は小さく(2〜3)する。**`DATABASE_URL_UNPOOLED`(マイグレーション用)は直接(5432)の URL**。Go は直接(5432)でつなぐ(下の注意)
+- **マイグレーションの順序: この Web が先、Go の goose が後**(Go の `profiles` が `user` を参照する)。スキーマを変えるときも同じ順序
 - Vercel の Production に `CRON_SECRET`(`openssl rand -base64 32` で作った値、Secret)が要る(掃除の Cron 用。`docs/design.md`)
 - サーバーレスなので、メモリに数えるレート制限はほとんど効かない。本番は DB に数える(`docs/design.md` の「レート制限」)
+
+## Neon から Render の DB へ切り替える手順(single-db、人が実行する)
+本番は運用前(実ユーザーなし)なので、データを移さず作り直してよい。移すなら:
+1. Render の DB に、この Web のマイグレーションを当てる(`user`、`session`、`jwks` などができる)。
+2. Neon の `user`・`account`・`session`・`verification`・`jwks`・`rate_limit` を `pg_dump --data-only` などで Render に入れる。**`jwks` を移さないと、発行済みの JWT が全部無効になる**(有効期間は 5 分、ログインし直しで復旧)。`user` を入れてから `session` と `account` を入れる(外部キー)。
+3. Go の `goose up`(Go のリポジトリ。`profiles` に `user` のない行があると失敗する)。
+4. Vercel の `DATABASE_URL` と `DATABASE_URL_UNPOOLED` を Render の DB に変え、`DATABASE_POOL_MAX` を小さくする。**Web を先に、Go を後に**デプロイする(新しい Web は Go の `DELETE /me` を呼ばない。新しい Go はそれを持たないので、古い Web が残ったまま Go だけ新しくすると、退会が失敗する)。
+5. ログイン、プロフィールの保存、退会を本番で確認してから、Neon を止める。
+
+注意:
+- 手順 3 と 4 は続けて行い、その間は更新を止める。間に Neon 側で作られたユーザーは Render の `user` にいないので、その `sub` の `PUT /me/profile` は 404 になる(運用前なので許容)。
+- `jwks` の秘密鍵は、Better Auth が既定で `BETTER_AUTH_SECRET` で暗号化して保存する(`node_modules/better-auth` の jwt プラグインのソースで確認済み。`jwks.disablePrivateKeyEncryption` はこの Web で未設定)。だから、移した `jwks` を復号するには、Vercel の `BETTER_AUTH_SECRET` を Neon の時と同じ値にする。変えるなら、`jwks` を移さず作り直す(発行済みの JWT は無効になるだけ)。
+- プーラーは Render の公式ドキュメントで確認した(上記)。**未確認なのは、プランごとの接続の上限**。切り替える前に確かめる。トランザクション単位のプールでは、セッション機能(アドバイザリロック、LISTEN/NOTIFY)と、プリペアドステートメントの扱いに注意が要る。この Web(node-postgres)は、名前付きのプリペアドステートメントを使わないので、そのままでよいはずだが、**プーラー経由で実際に動くかは未検証**(切り替え前に確かめる)。
+- **Go はプーラー経由にしない**(pgx は既定でプリペアドステートメントを使う。トランザクション単位のプールと相性が悪い)。Go の接続は最大 10 で少なく、直接(5432)で足りる。
+- `pg_dump` で移すときは、`-t` で上のテーブルだけを指定する(`--data-only` で、スキーマは先に Render に当てた drizzle のものを使う)。
 
 ## レート制限の保存先を DB にする手順(人が実行する)
 `auth.ts` は Better Auth のレート制限を `storage: "database"` にしている。Better Auth は起動時に Drizzle のスキーマを検査し、`rateLimit` テーブルがないと **`Missing tables: rateLimit` でエラー**になる。次の順で人が実行する(hook は私が実行するのを止める):
 1. `npm run db:schema`(`src/db/schema.ts` を再生成)
 2. `npm run db:generate`(`drizzle/` にマイグレーションの SQL を作る)
-3. `npm run db:migrate`(`.env.local` の `DATABASE_URL_UNPOOLED` が指す DB に適用。**本番の Neon にも、デプロイの前に同じ SQL を適用する**。プレビューが別の Neon ブランチを指すなら、そちらにも)
+3. `npm run db:migrate`(`.env.local` の `DATABASE_URL_UNPOOLED` が指す DB に適用。**本番の Render の DB にも、デプロイの前に同じ SQL を適用する**)
 
 `rate_limit` がない DB では、Better Auth のレート制限対象の認証リクエストが失敗する。一方、宛先ごとの制限は数えられなければ通す(fail-open)ので、壊れても気づきにくい。古いコードに戻すとき、テーブルが残っていても害はない。E2E と実 Postgres のテストは `drizzle/` の SQL を直接流すので、2 のあとは追加作業が要らない。
 

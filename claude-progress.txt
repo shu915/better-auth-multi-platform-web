@@ -1,21 +1,22 @@
 claude-progress.txt (web)
-最終更新: 2026-10-10
+最終更新: 2026-10-13
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
 機能の設計の詳細は docs/design.md、デプロイと公開前チェックは docs/deploy.md。ここには状況だけを書く。
 
 ## 完了したタスク
 - ログインとプロフィール: マジックリンク、/profile(閲覧)、/profile/edit(Server Action で name と bio を保存)
 - Google ログイン(任意。紐づけ・解除、新規登録不可)と、セッション盗難の対策(5 分ルール、通知メール)
-- 退会(Go の DELETE /me → deleteUser、通知メール)、サーバーだけが呼べるエンドポイント(HTTP は 403 SERVER_ONLY)
+- 退会(revokeOtherSessions → deleteUser、通知メール。single-db 後は Go を呼ばない)、サーバーだけが呼べるエンドポイント(HTTP は 403 SERVER_ONLY)
 - 期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC)
 - 本番向けの守り: DB 接続、レート制限(DB に数える)、CSP(強制)、本番で拒否する設定
 - テスト: Vitest(約 190 件)、E2E(Playwright 1 本)、CI(check と e2e の 2 ジョブ)、evaluator と hooks
 - 本番デプロイ(2026-10-09): Vercel + Neon と Render(いずれもシンガポール)。ログイン、プロフィール、退会、Google 紐づけ、レート制限、HSTS、CSP、Cron の手動実行を人が確認済み
 - README を書いた
 - CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
+- single-db(2026-10-13、ブランチ single-db): DB を Go と共有する 1 つにまとめた(本番は Render)。Go の profiles が user(id) を ON DELETE CASCADE で参照。退会は Go の DELETE /me を呼ばず、user の行の削除だけ(delete-account.ts、actions.ts)。E2E は e2e という 1 つの DB(Web の drizzle → Go の migrations の順)
 
 ## 実行中のタスク
-- なし(ブランチ docs/slim-claude-md に、CLAUDE.md の整理が未コミットで載っている)
+- single-db の仕上げ(レビュー中)。Go のリポジトリにも同じ名前のブランチがある。本番の切り替え(Neon から Render の DB へ)は人が行う。手順は docs/deploy.md
 
 ## 未確認
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
@@ -24,7 +25,7 @@ claude-progress.txt (web)
 - セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない
 
 ## 既知の限界(許容している)
-- Go API にレート制限がない。JWT は退会後も最大 5 分有効で、その間の PUT /me/profile が行を作り直す
+- Go API にレート制限がない。JWT は退会後も最大 5 分有効だが、Go が user のない sub への書き込みを 404 で断るので、行は戻らない
 - 宛先ごとの制限は、他人のログインを妨害するのに使える(+ のエイリアスは別に数える)
 - CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない
 - Cron の DELETE に件数の上限がなく、CRON_SECRET の最小長も強制していない
@@ -33,9 +34,8 @@ claude-progress.txt (web)
 - 無料プランの Render はスリープする。スリープ明けの初回は 5 秒で切れて bio が出ないことがある
 
 ## これからのタスク(順番)
-1. single-db モードを先に作る(Tauri / Expo より前)
+1. single-db を本番に切り替える(docs/deploy.md の手順。Render のプーラー(6432)は組み込み済みで有効化できる。プーラー経由で Web が動くか、プランごとの接続上限は未検証)
 2. verify-full で Render DB に繋がるか試す
 3. Tauri(デスクトップ)と Expo(モバイル)のどちらから始めるか決める
    - どちらも Better Auth でログインして JWT を取り、Go を直接呼ぶ(Go は変えない)
    - 別オリジンになるので trustedOrigins が要る。/token の HTTP 拒否(SERVER_ONLY)も見直す
-   - 直接呼ぶ設計になると、退会後に JWT で行が復活する窓(最大 5 分)が現実になる。そのときにトゥームストーンを検討する

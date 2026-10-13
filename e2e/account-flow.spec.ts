@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { Client } from "pg";
-import { E2E, databaseUrl } from "./env.mjs";
+import { E2E, E2E_DATABASE, databaseUrl } from "./env.mjs";
 
 // One path through the whole product, the way a person uses it: sign in with the emailed link,
 // edit the profile, delete the account. Real browser, real web app, real Go API, real Postgres.
@@ -32,8 +32,8 @@ async function waitForMail(address: string, subject: string): Promise<Mail> {
   return found;
 }
 
-async function count(database: string, sql: string, params: unknown[]): Promise<number> {
-  const client = new Client({ connectionString: databaseUrl(database) });
+async function count(sql: string, params: unknown[]): Promise<number> {
+  const client = new Client({ connectionString: databaseUrl(E2E_DATABASE) });
   await client.connect();
   try {
     const { rows } = await client.query<{ n: string }>(sql, params);
@@ -44,7 +44,7 @@ async function count(database: string, sql: string, params: unknown[]): Promise<
 }
 
 async function userIdOf(email: string): Promise<string> {
-  const client = new Client({ connectionString: databaseUrl("e2e_web") });
+  const client = new Client({ connectionString: databaseUrl(E2E_DATABASE) });
   await client.connect();
   try {
     const { rows } = await client.query<{ id: string }>(`SELECT id FROM "user" WHERE email = $1`, [email]);
@@ -133,7 +133,7 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
   });
   expect(deleteOverHttp.status()).toBe(403);
   expect(await deleteOverHttp.text()).toContain("SERVER_ONLY");
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
+  expect(await count(`SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
   const jwks = await page.request.get("/api/auth/jwks");
   expect(jwks.status()).toBe(200);
   expect((await jwks.json()).keys.length).toBeGreaterThan(0);
@@ -147,28 +147,29 @@ test("sign in, edit the profile, delete the account", async ({ page }) => {
   await expect(page.getByText("E2E User")).toBeVisible();
   await expect(page.getByText(bio)).toBeVisible();
 
-  // The Go API really stored it, and the web app really made the user and its session. Counted
+  // The Go API really stored it, and the web app really made the user and its session (one database). Counted
   // for this user only, so a leftover from an earlier attempt cannot change the result.
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM session WHERE user_id = $1`, [userId])).toBeGreaterThan(0);
+  expect(await count(`SELECT count(*) AS n FROM session WHERE user_id = $1`, [userId])).toBeGreaterThan(0);
   // The Go row belongs to the web app's user id (the JWT's sub), not just to some user.
-  expect(await count("e2e_api", "SELECT count(*) AS n FROM profiles WHERE user_id = $1 AND bio = $2", [userId, bio])).toBe(1);
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
+  expect(await count("SELECT count(*) AS n FROM profiles WHERE user_id = $1 AND bio = $2", [userId, bio])).toBe(1);
+  expect(await count(`SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
 
   // Delete the account: a wrong email is refused, the right one goes through.
   page.on("dialog", (dialog) => void dialog.accept());
   await page.getByLabel(/Type your email address/).fill("someone-else@example.com");
   await page.getByRole("button", { name: "Delete account" }).click();
   await expect(page.getByText("The email address does not match your account.")).toBeVisible();
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
+  expect(await count(`SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(1);
 
   await page.getByLabel(/Type your email address/).fill(email);
   await page.getByRole("button", { name: "Delete account" }).click();
   await expect(page).toHaveURL(/\/login/); // "/" sends a visitor without a session here
 
-  // Everything is gone, on both sides, and the person was told by email.
-  expect(await count("e2e_api", "SELECT count(*) AS n FROM profiles WHERE user_id = $1", [userId])).toBe(0);
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(0);
-  expect(await count("e2e_web", `SELECT count(*) AS n FROM session WHERE user_id = $1`, [userId])).toBe(0);
+  // Everything is gone, and the person was told by email. The profile (a table of the Go API)
+  // went with the user through the foreign key: nothing called the Go API.
+  expect(await count("SELECT count(*) AS n FROM profiles WHERE user_id = $1", [userId])).toBe(0);
+  expect(await count(`SELECT count(*) AS n FROM "user" WHERE email = $1`, [email])).toBe(0);
+  expect(await count(`SELECT count(*) AS n FROM session WHERE user_id = $1`, [userId])).toBe(0);
   await waitForMail(email, "Your account was deleted");
 
   // The old session no longer opens anything.

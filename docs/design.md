@@ -3,9 +3,11 @@
 CLAUDE.md から切り出した、実装の方針と理由。コードを変えたら、ここも合わせて直す。
 
 ## DB 接続(`src/lib/db.ts`、`src/lib/database-config.ts`)
+- **DB は Go API と共有する 1 つ(single-db。本番は Render の Postgres)。** Better Auth のテーブル(`user`、`session`、`account`、`verification`、`jwks`、`rate_limit`)は、この Web の `drizzle/` が作る。Go は自分のテーブル(`profiles`)を持ち、`profiles.user_id` は `user(id)` を `ON DELETE CASCADE` で参照する。**マイグレーションの順序は、この Web が先、Go の goose が後。** Go は `user` を読み書きしない
 - 本番(`NODE_ENV=production`)では、`DATABASE_URL` に `sslmode=require`(または `verify-ca` / `verify-full`)がないと起動時にエラー(Go と同じ)。`next build` の間は検査しない(ダミーの設定で接続しないため)。開発は強制しない
-- プールは `globalThis` に 1 つだけ(ホットリロードで増えない)。最大 10 接続(`DATABASE_POOL_MAX` で 1〜50)、接続待ち 5 秒、クエリ 10 秒(クライアント側の `query_timeout`)。サーバー側の `statement_timeout` を起動パラメータで送ると、Neon の pooled URL などが拒否する恐れがあるので使わない。アイドル接続のエラーはログに出す
-- `DATABASE_URL_UNPOOLED` は `drizzle-kit` 専用(`-pooler` の付かない直接つなぐ URL。プール経由だとマイグレーションが固まる)
+- プールは `globalThis` に 1 つだけ(ホットリロードで増えない)。最大 10 接続(`DATABASE_POOL_MAX` で 1〜50)、接続待ち 5 秒、クエリ 10 秒(クライアント側の `query_timeout`)。サーバー側の `statement_timeout` を起動パラメータで送ると、プーラー(PgBouncer など)を挟んだ URL が拒否する恐れがあるので使わない。アイドル接続のエラーはログに出す
+- `DATABASE_URL_UNPOOLED` は `drizzle-kit` 専用(プーラーを挟まない直接つなぐ URL。プール経由だとマイグレーションが固まる)。Render の DB では、プーラー(6432)ではなく直接(5432)の URL にする。プーラーを使わないなら `DATABASE_URL` と同じ値でよい
+- **接続数:** Render の Postgres には PgBouncer が組み込まれている(無料プランを除く。docs/deploy.md)。Vercel のサーバーレスは関数のインスタンスごとにプールを持つので、`DATABASE_POOL_MAX` を小さくし、DB のプランの上限(Go の最大 10 接続も合わせて)を超えないようにする
 
 ## CSP(`src/proxy.ts`、`src/lib/csp.ts`)
 - ページへのリクエストごとに nonce を作り、nonce の付いた自分たちのスクリプトだけ実行を許すポリシーをヘッダーで返す(Next.js はリクエストのヘッダーから nonce を拾って自分のスクリプトに付ける)
@@ -22,7 +24,7 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
 ## プロフィール
 - `/profile`(Server Component、閲覧のみ): email と name はセッション、bio は Go の `GET /me/profile`。Edit ボタンで `/profile/edit` へ。API が落ちていても email と name は表示し、bio の欄にだけエラーを出す
 - `/profile/edit`(Server Component): name と bio のフォーム(`src/components/profile-form.tsx`)と Cancel リンク。API が落ちていても name は保存できる(bio 欄は出さないので、空で上書きされない)。保存後は、失敗したフィールドがなければ `/profile` へ、一部でも失敗したら `/profile/edit` に残してフィールドごとに結果を出す(判定は `shouldLeaveEditPage`)
-- 保存: Server Action `updateProfile`(`src/app/profile/actions.ts`)。セッションを確認し、変更したフィールドだけ書く。name は Better Auth の `updateUser`(Web の DB)、bio は `callApi` で Go の `PUT /me/profile`。2 つの DB にまたがるのでトランザクションはなく、独立に書いて結果をフィールドごとに出す(どちらも冪等なので再送で直る)。検証と書き込みのロジックは `src/lib/profile-form.ts`
+- 保存: Server Action `updateProfile`(`src/app/profile/actions.ts`)。セッションを確認し、変更したフィールドだけ書く。name は Better Auth の `updateUser`、bio は `callApi` で Go の `PUT /me/profile`。DB は 1 つ(single-db)だが、書き込みが別サービス(Web と Go)にまたがるので 1 つのトランザクションにはできず、独立に書いて結果をフィールドごとに出す(どちらも冪等なので再送で直る)。検証と書き込みのロジックは `src/lib/profile-form.ts`
 
 ## ログインと Google
 - ユーザーはマジックリンクで作られる(これが root。ユーザー ID = JWT の `sub` がここで決まる)。Google は、ログイン済みのユーザーが後から足す**任意のログイン手段**で、ユーザーを新しく作れない
@@ -42,18 +44,19 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
 - 解除: 「Google: linked」の横の「Unlink Google」(`authClient.unlinkAccount`、`src/components/unlink-google-button.tsx`)。最近のログイン(5 分以内)が要る(`SESSION_NOT_FRESH` ならログインし直すよう案内。文言は `src/lib/linked-accounts.ts`)
 - ログイン: `/login` の「Continue with Google」は、紐づけ済みの Google だけが入れる。未紐づけだと `/login?error=...` に戻り、`src/lib/oauth-errors.ts` の `oauthErrorMessage` が既知のコード(`signup_disabled`、`account_not_linked` など)だけ文言に変える(未知のコードは汎用の文言で、クエリをそのまま出さない)
 - 紐づけたユーザーでも `sub` は root のままなので、Go の `profiles` はそのまま使える。Go は変えない
+- プロフィールの保存は 2 か所: 名前は Better Auth(`user.name`)、bio は Go(`PUT /me/profile`)。1 回のトランザクションではないので、部分失敗はありうる(`saveProfile` が扱う)。退会済みのユーザーへの `PUT /me/profile` は Go が 404 で断る
 - 画面からは 1 ユーザーに Google は 1 つだけ(紐づけ済みなら「Link Google」を隠す)。1 つの Google を複数ユーザーに紐づけることは Better Auth が止める
 - 未対応: 他のプロバイダ
 
 ## 退会(`/profile` の「Delete account」、`src/components/delete-account-form.tsx`)
-- Server Action `deleteMyAccount`(`src/app/profile/actions.ts`)が `src/lib/delete-account.ts` の `deleteAccount` を呼ぶ。順序: (1) `revokeOtherSessions`(新しい JWT が出なくなる)→ (2) Go の `DELETE /me`(冪等、204)→ (3) Better Auth の `deleteUser`(user を消すと session と account は外部キー cascade と Better Auth で消える)。途中で失敗したらそこで止まり、ユーザーは残る。再送で全部やり直せる
+- Server Action `deleteMyAccount`(`src/app/profile/actions.ts`)が `src/lib/delete-account.ts` の `deleteAccount` を呼ぶ。順序: (1) `revokeOtherSessions`(新しい JWT が出なくなる)→ (2) Better Auth の `deleteUser`。**Go は呼ばない**: user を消すと、session と account、そして Go の `profiles` が、外部キーの `ON DELETE CASCADE` で同じ DB から消える。途中で失敗したらそこで止まり、ユーザーは残る。再送で全部やり直せる。(1) の前に発行された JWT は最大 5 分有効だが、Go は `user` のない `sub` の書き込みを 404 で断るので、行は戻らない
 - 入力した確認用メールが一致しないと何も呼ばない
-- `deleteUser` は新しいログイン(5 分)を要求するが、Go のデータを消した後に断られると「データのないアカウント」が残るので、`deleteAccount` が最初に鮮度を確かめる
+- `deleteUser` は新しいログイン(5 分)を要求する。他のセッションを失効した後に断られると、全端末からログアウトされただけで退会できないので、`deleteAccount` が最初に鮮度を確かめる
 - 成功したら root のメールに通知(`notifyDeleted`。宛先は `deleteAccount` がセッションのメールに決める。入力した確認用メールではない。`after()` で非同期、失敗しても退会は成功)。盗まれたセッションでの退会に本人が気づくため
 - `user.deleteUser.enabled` は `google-auth-options.ts` にあり、`google-auth.test.ts` の「account deletion」が守る。Cookie を消すため `auth.ts` の plugins の最後に `nextCookies()` を入れてある
-- **HTTP 経由では拒否するエンドポイント:** `/api/auth/delete-user`、`/update-user`、`/token`(と `/get-access-token`、`/refresh-token`)。確認用メール・Go のデータ削除・通知・名前の検証は Server Action にしかないので、Cookie だけで素通りされる(再現済み)。`/token` は、Cookie だけで JWT を取れると、盗まれたセッションや画面上のスクリプトが、5 分の新しいログイン確認を通らずに Go の `DELETE /me` などを直接呼べるため。`google-auth-options.ts` の `hooks.before` が、受信リクエストのある呼び出し(HTTP)だけ 403 `SERVER_ONLY` で断る。Server Action の `auth.api.*` はリクエストがないので通る。`callApi` は `auth.api.getToken` を使うので影響しない。公開鍵の `/api/auth/jwks` は Go が取りに来るので公開のまま
+- **HTTP 経由では拒否するエンドポイント:** `/api/auth/delete-user`、`/update-user`、`/token`(と `/get-access-token`、`/refresh-token`)。確認用メール・通知・名前の検証は Server Action にしかないので、Cookie だけで素通りされる(再現済み)。`/token` は、Cookie だけで JWT を取れると、盗まれたセッションや画面上のスクリプトが、5 分の新しいログイン確認を通らずに Go を直接呼べるため。`google-auth-options.ts` の `hooks.before` が、受信リクエストのある呼び出し(HTTP)だけ 403 `SERVER_ONLY` で断る。Server Action の `auth.api.*` はリクエストがないので通る。`callApi` は `auth.api.getToken` を使うので影響しない。公開鍵の `/api/auth/jwks` は Go が取りに来るので公開のまま
 - デスクトップやモバイルが Go を直接呼ぶ構成にするときは、このルールを見直す(専用エンドポイントにする、など)。`sendDeleteAccountVerification` や `changeEmail` を有効にするときも、ガードとテスト(`/delete-user/callback` など)を見直す
-- 退会後に残るもの(`deleteUser` が消すのは user、session、account だけ):
+- 退会後に残るもの(`deleteUser` が消すのは user と、外部キーで続くもの: session、account、Go の `profiles`):
   - `jwks`: 全ユーザー共通の署名鍵で個人のデータではない。消してはいけない
   - `verification`: 未使用のマジックリンクの行が残りうる(`value` に email)。有効期限は既定 5 分なので、最大 5 分分で期限が切れたら無効
 - 期限切れの行の掃除: Vercel Cron が毎日 1 回(`vercel.json`、18:00 UTC = 03:00 JST)`GET /api/cron/cleanup` を呼ぶ(`src/lib/cleanup.ts`)。消すのは、期限切れの `verification` と `session`、1 日以上触られていない `rate_limit`。`jwks` と user は消さない。`CRON_SECRET`(Vercel が Bearer で自動で送る)と一致しないと何もしない。未設定なら 503。Cron は本番のデプロイだけで動く

@@ -55,7 +55,7 @@ export async function apiRequest<T>(
     },
   );
   if (!res.ok) throw new ApiError(res.status);
-  // 204 has no body (DELETE /me); callers of such endpoints use T = void.
+  // 204 has no body; callers of such endpoints use T = void.
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

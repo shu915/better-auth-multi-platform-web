@@ -1,13 +1,14 @@
 import { defineConfig } from "@playwright/test";
-import { E2E, databaseUrl } from "./e2e/env.mjs";
+import { E2E, E2E_DATABASE, databaseUrl } from "./e2e/env.mjs";
 
 // End-to-end: a real browser against a real web app, a real Go API and a real Postgres.
 //
-// Everything runs on its own ports and its own databases (e2e_web, e2e_api), set explicitly
-// below, so it can never reach the databases of your local development setup. Your own `npm run dev`
+// Everything runs on its own ports and its own database (better_auth_e2e, shared by the web app and the Go
+// API, like in production), set explicitly below, so it can never reach the database of your
+// local development setup. Your own `npm run dev`
 // can keep running: the end-to-end server writes to .next-e2e instead of .next.
 //
-// Run it with `npm run test:e2e`: e2e/prepare.mjs makes the databases first. Needs a Postgres
+// Run it with `npm run test:e2e`: e2e/prepare.mjs makes the database first. Needs a Postgres
 // server and the Go API's source (../api by default; API_DIR to change).
 
 const webOrigin = `http://localhost:${E2E.webPort}`;
@@ -39,7 +40,7 @@ export default defineConfig({
         AUTH_JWKS_URL: `${webOrigin}/api/auth/jwks`,
         APP_ENV: "development",
         CORS_ALLOWED_ORIGINS: webOrigin,
-        DATABASE_URL: databaseUrl("e2e_api"),
+        DATABASE_URL: databaseUrl(E2E_DATABASE),
       },
     },
     {
@@ -52,8 +53,8 @@ export default defineConfig({
         BETTER_AUTH_URL: webOrigin,
         BETTER_AUTH_SECRET: "e2e-only-secret-e2e-only-secret-e2e-only",
         JWT_AUDIENCE: "e2e-api",
-        DATABASE_URL: databaseUrl("e2e_web"),
-        DATABASE_URL_UNPOOLED: databaseUrl("e2e_web"),
+        DATABASE_URL: databaseUrl(E2E_DATABASE),
+        DATABASE_URL_UNPOOLED: databaseUrl(E2E_DATABASE),
         API_BASE_URL: `http://localhost:${E2E.apiPort}`,
         EMAIL_TRANSPORT: "file",
         EMAIL_FILE: E2E.mailFile,

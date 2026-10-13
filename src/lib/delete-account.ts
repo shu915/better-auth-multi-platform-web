@@ -1,16 +1,17 @@
 import { FRESH_SESSION_SECONDS } from "@/lib/google-auth-options";
 
-// Deleting an account touches two systems with no shared transaction, so the order matters.
+// Everything of the user is in one database (the Go API shares it), so deleting the user row is
+// the whole deletion: sessions and linked accounts go with it, and so does the Go API's data
+// (profiles references the user with ON DELETE CASCADE). There is no call to the Go API.
 //   1. revoke the other sessions: no new JWT can be issued from them (the current session is
-//      needed for the next two steps)
-//   2. delete the user's data in the Go API (DELETE /me, idempotent)
-//   3. delete the user (our database: user, sessions and linked accounts such as Google)
-//   4. tell the user's own address that the account was deleted, so a deletion they did not
+//      needed for the next step). A JWT issued before this stays valid for a few minutes, but
+//      the Go API refuses to write for a user that no longer exists.
+//   2. delete the user
+//   3. tell the user's own address that the account was deleted, so a deletion they did not
 //      make gets noticed. A failure here never undoes or fails the deletion.
 // A failure stops the rest and leaves the user in place, so submitting again finishes the job.
 
-export type DeleteAccountStep =
-  "revoke-sessions" | "delete-api-data" | "delete-user";
+export type DeleteAccountStep = "revoke-sessions" | "delete-user";
 
 export type DeleteAccountResult =
   | { ok: true }
@@ -19,14 +20,13 @@ export type DeleteAccountResult =
 
 export type DeleteAccountDeps = {
   revokeOtherSessions: () => Promise<void>;
-  deleteApiData: () => Promise<void>;
   deleteUser: () => Promise<void>;
   // The recipient is decided in deleteAccount (the session's email), never by the caller.
   notifyDeleted: (notice: { to: string; at: Date }) => Promise<void>;
 };
 
 // Stricter than Better Auth's own check by this margin, so a session that passes here does not
-// cross the window before deleteUser runs (that would delete the Go data and keep the user).
+// cross the window before deleteUser runs (it would then fail after the other sessions are revoked).
 const FRESH_MARGIN_SECONDS = 30;
 
 export function isSessionFresh(sessionCreatedAt: Date, now: Date): boolean {
@@ -49,15 +49,14 @@ export async function deleteAccount(
   ) {
     return { ok: false, reason: "email_mismatch" };
   }
-  // Checked before anything is deleted: deleting the user needs a fresh session, and failing
-  // there after the Go data is gone would leave an account with no data.
+  // Checked before anything is changed: deleting the user needs a fresh session, and failing
+  // there after the other sessions are revoked would sign the user out everywhere for nothing.
   if (!isSessionFresh(input.sessionCreatedAt, input.now)) {
     return { ok: false, reason: "not_fresh" };
   }
 
   const steps: [DeleteAccountStep, () => Promise<void>][] = [
     ["revoke-sessions", deps.revokeOtherSessions],
-    ["delete-api-data", deps.deleteApiData],
     ["delete-user", deps.deleteUser],
   ];
   for (const [step, run] of steps) {

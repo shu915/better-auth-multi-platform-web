@@ -9,14 +9,15 @@ Next.js と Better Auth、Go で認証を実装する。Go の API は別リポ�
 - ログインはマジックリンクが必須(これが root で、ユーザー ID = JWT の `sub` が決まる)。Google などの OAuth は、ログイン済みのユーザーが後から足す任意の手段で、新規登録はできない。パスワードは使わない
 
 ## 使用技術
-Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / Drizzle + Neon(Postgres)
+Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / Drizzle + Postgres(Go API と共有する 1 つの DB。本番は Render)
 
 ## 詳細ドキュメント(必要なときに読む)
 - [docs/design.md](docs/design.md): DB 接続、CSP、Go API の呼び出し、プロフィール、Google ログイン、退会、メール送信、レート制限の方針と理由
-- [docs/deploy.md](docs/deploy.md): デプロイ先(Vercel + Neon、Render)、レート制限テーブルの手順、公開前チェックリスト
+- [docs/deploy.md](docs/deploy.md): デプロイ先(Vercel、Render の DB と Go)、Neon からの切り替え手順、レート制限テーブルの手順、公開前チェックリスト
 - 次の機能を触るときは、先に該当の節を読む。コードを変えたら、その節も直す
 
 ## 守るルール(特に壊しやすいもの)
+- **DB は Go と共有している(single-db)。** Better Auth のテーブルはこの Web の `drizzle/` が作る。Go の `profiles` が `user(id)` を外部キー(`ON DELETE CASCADE`)で参照する。マイグレーションの順序は **この Web が先、Go の goose が後**。退会は `user` の行を消すだけで、Go を呼ばない(外部キーが `profiles` を消す)
 - JWT をブラウザに出さない。Go を呼ぶのは `callApi`(サーバー)だけ
 - `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す
 - 紐づけ・解除・退会は「5 分以内のログイン」(`FRESH_SESSION_SECONDS`)を要求する
@@ -28,7 +29,7 @@ Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / 
 - 型チェック: `npx next typegen && npx tsc --noEmit`(`.next` を消した後は先に typegen が要る。CI と Stop hook も同じ順序)
 - `npm test`: Vitest(`src/**/*.test.ts`。画面のテストは入れない方針)
   - `src/lib/auth-postgres.test.ts` は実 Postgres を使う。`TEST_DATABASE_URL` が要る(`api/` で `docker compose up -d db` を起動しておけば Stop hook が渡す。CI は service を立てる)。**本物のデータが入った DB を指さない**。未設定だと SKIP され、CI は SKIP があると失敗する
-- `npm run test:e2e`: E2E(Playwright。ログイン → プロフィール編集 → 退会の 1 本)。Postgres(`api/` で `docker compose up -d db`)、Go(`../api`、`API_DIR` で変更)、`npx playwright install chromium`(初回)が要る。実行のたびに `e2e_web` と `e2e_api` を作り直すので、**本物のデータが入った Postgres を `E2E_DATABASE_URL` に指さない**。開発サーバーで動くので、本番ビルドだけの挙動(レート制限、Cookie の Secure、`file` メール転送の拒否)は通らない。ポート 3100 と 8180 を使う。`npx playwright test` は直接実行しない
+- `npm run test:e2e`: E2E(Playwright。ログイン → プロフィール編集 → 退会の 1 本)。Postgres(`api/` で `docker compose up -d db`)、Go(`../api`、`API_DIR` で変更)、`npx playwright install chromium`(初回)が要る。実行のたびに `better_auth_e2e` という 1 つの DB(Web と Go が共有。Web の drizzle → Go の migrations の順に適用)を作り直すので、**本物のデータが入った Postgres を `E2E_DATABASE_URL` に指さない**。開発サーバーで動くので、本番ビルドだけの挙動(レート制限、Cookie の Secure、`file` メール転送の拒否)は通らない。ポート 3100 と 8180 を使う。`npx playwright test` は直接実行しない
 - `npm run db:generate`: マイグレーションを生成(`drizzle/`)/ `npm run db:migrate`: 適用(`DATABASE_URL_UNPOOLED`)/ `npm run db:studio` / `npm run db:schema`: Better Auth の設定から `src/db/schema.ts` を再生成(手で編集しない)
 - `.next/` は壊れたら消してよい
 

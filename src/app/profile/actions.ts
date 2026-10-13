@@ -23,8 +23,9 @@ import {
   type ProfileFormState,
 } from "@/lib/profile-form";
 
-// Saves the signed-in user's name (our database) and bio (the Go API). The browser never talks
-// to either directly, and the JWT for the Go API is issued here, per call, by callApi.
+// Saves the signed-in user's name (Better Auth's user table) and bio (the Go API, which writes the
+// profiles table of the same database). The browser never talks to either directly, and the JWT
+// for the Go API is issued here, per call, by callApi.
 export async function updateProfile(
   _previous: ProfileFormState,
   formData: FormData,
@@ -72,8 +73,8 @@ export async function updateProfile(
   return toFormState(parsed.value, result);
 }
 
-// Deletes the signed-in user's account: their data in the Go API, then the user itself (which
-// takes the sessions and linked accounts such as Google with it). See deleteAccount for the order.
+// Deletes the signed-in user's account: the user row, which takes the sessions, the linked
+// accounts such as Google and (by foreign key) the Go API's profile with it. See deleteAccount.
 export async function deleteMyAccount(
   _previous: DeleteAccountFormState,
   formData: FormData,
@@ -95,9 +96,6 @@ export async function deleteMyAccount(
     {
       revokeOtherSessions: async () => {
         await auth.api.revokeOtherSessions({ headers: requestHeaders });
-      },
-      deleteApiData: async () => {
-        await callApi<void>("/me", { method: "DELETE" });
       },
       deleteUser: async () => {
         await auth.api.deleteUser({ headers: requestHeaders, body: {} });

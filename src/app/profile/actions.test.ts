@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// deleteMyAccount is the wiring between the Next.js request, Better Auth, the Go API and the
-// mail sender. The logic is tested in delete-account.test.ts; this checks that the real Server
+// deleteMyAccount is the wiring between the Next.js request, Better Auth and the mail sender
+// (the Go API is not called: the user row's foreign key removes its data). The logic is tested in delete-account.test.ts; this checks that the real Server
 // Action passes the right things to the right place, in the right order. Everything outside
 // our code is replaced.
 
@@ -74,7 +74,6 @@ beforeEach(() => {
   mocks.afterTasks.length = 0;
   mocks.getSession.mockResolvedValue(freshSession());
   mocks.revokeOtherSessions.mockImplementation(async () => void mocks.calls.push("revoke"));
-  mocks.callApi.mockImplementation(async () => void mocks.calls.push("api"));
   mocks.deleteUser.mockImplementation(async () => void mocks.calls.push("user"));
   mocks.sendEmail.mockResolvedValue(undefined);
 });
@@ -89,13 +88,13 @@ async function run(confirmEmail: string) {
 }
 
 describe("deleteMyAccount", () => {
-  it("revokes other sessions, deletes the Go data, deletes the user, then redirects home", async () => {
+  it("revokes other sessions, deletes the user, then redirects home, without calling the Go API", async () => {
     const result = await run("root@example.com");
 
-    expect(mocks.calls).toEqual(["revoke", "api", "user"]);
+    expect(mocks.calls).toEqual(["revoke", "user"]);
     expect(result.redirectedTo).toBe("/");
     expect(mocks.revokeOtherSessions).toHaveBeenCalledWith({ headers: requestHeaders });
-    expect(mocks.callApi).toHaveBeenCalledWith("/me", { method: "DELETE" });
+    expect(mocks.callApi).not.toHaveBeenCalled();
     expect(mocks.deleteUser).toHaveBeenCalledWith({ headers: requestHeaders, body: {} });
   });
 
@@ -119,7 +118,7 @@ describe("deleteMyAccount", () => {
     await expect(mocks.afterTasks[0]()).resolves.toBeUndefined();
 
     expect(result.redirectedTo).toBe("/");
-    expect(mocks.calls).toEqual(["revoke", "api", "user"]);
+    expect(mocks.calls).toEqual(["revoke", "user"]);
   });
 
   it("sends the visitor to /login and touches nothing without a session", async () => {
@@ -152,13 +151,22 @@ describe("deleteMyAccount", () => {
     expect(mocks.calls).toEqual([]);
   });
 
-  it("keeps the user and sends no notice when the Go API fails", async () => {
-    mocks.callApi.mockRejectedValue(new Error("api down"));
+  it("keeps the user and sends no notice when deleting the user fails", async () => {
+    mocks.deleteUser.mockRejectedValue(new Error("db down"));
 
     const result = await run("root@example.com");
 
     expect(result.state?.error).toMatch(/Failed to delete/);
-    expect(result.state?.error).not.toContain("api down");
+    expect(result.state?.error).not.toContain("db down");
+    expect(mocks.afterTasks).toHaveLength(0);
+  });
+
+  it("stops before deleting the user when revoking the other sessions fails", async () => {
+    mocks.revokeOtherSessions.mockRejectedValue(new Error("db down"));
+
+    const result = await run("root@example.com");
+
+    expect(result.state?.error).toMatch(/Failed to delete/);
     expect(mocks.deleteUser).not.toHaveBeenCalled();
     expect(mocks.afterTasks).toHaveLength(0);
   });

@@ -78,7 +78,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # Throwaway CI database with a dummy password; not a secret. The run makes and drops its own e2e_* databases.
+      # Throwaway CI database with a dummy password; not a secret. The run makes and drops its own better_auth_e2e database.
       E2E_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
       API_DIR: ${{ github.workspace }}/api
       # Placeholders so the web app's modules can load; the run sets its own values for the real ones.

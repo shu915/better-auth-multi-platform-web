@@ -71,13 +71,13 @@ describe("apiRequest over a real connection", () => {
     expect(JSON.parse(go.seen[0].body)).toEqual({ bio: "あ🙂" });
   });
 
-  it("DELETE /me accepts the empty 204 body", async () => {
+  it("accepts an empty 204 body", async () => {
     const go = await startFakeGo(() => ({ status: 204 }));
 
     await expect(
-      apiRequest<void>("/me", "t", { method: "DELETE", baseURL: go.baseURL }),
+      apiRequest<void>("/resource", "t", { method: "DELETE", baseURL: go.baseURL }),
     ).resolves.toBeUndefined();
-    expect(go.seen[0]).toMatchObject({ method: "DELETE", url: "/me" });
+    expect(go.seen[0]).toMatchObject({ method: "DELETE", url: "/resource" });
   });
 
   it("turns the Go API's error statuses into ApiError with that status", async () => {

@@ -14,10 +14,13 @@
 ブラウザ ──▶ Next.js (Vercel) ──▶ Go API (Render)
                │  Better Auth        │  公開鍵で JWT の署名を検証
                ▼                     ▼
-           Postgres (Neon)      Postgres (Render)
-         ユーザー、セッション、    プロフィール(bio)
-         署名鍵
+                └──── Postgres (Render、1 つ) ────┘
+                 Web: ユーザー、セッション、署名鍵
+                 Go: プロフィール(bio) → ユーザーを参照
 ```
+
+DB は Go API と共有する 1 つです(single-db)。Web が Better Auth のテーブルを作り、Go の
+`profiles` が、外部キーでユーザーを参照します。
 
 - **ログインはマジックリンク。** パスワードは使いません。最初のマジックリンクでユーザーが作られ、
   そのユーザー ID が、すべてのトークンの `sub` になります。
@@ -27,11 +30,11 @@
 - **ブラウザは JWT を持ちません。** Next.js のサーバーが、Go API を呼ぶたびに、短命(5 分)の
   トークンを発行して付けます(`src/lib/api-server.ts`)。Go は、`/api/auth/jwks` の公開鍵で署名を、
   あわせて issuer と audience を検証します。
-- **退会**(`/profile`): 他のセッションを失効し、Go 側のデータを消し、ユーザーを削除して、元の
-  メールアドレスに通知します。確認用のメールアドレスの入力と、直近のログインを求めます。
+- **退会**(`/profile`): 他のセッションを失効し、ユーザーを削除して(Go のプロフィールは外部キーで
+  一緒に消えます)、元のメールアドレスに通知します。確認用のメールアドレスの入力と、直近のログインを求めます。
 - **サーバーだけが呼べるエンドポイント**(`/api/auth/delete-user`、`/update-user`、`/token`、
   Google のトークン系)は、HTTP 経由では `403` を返します。Cookie だけで、Server Action にある
-  ルール(確認入力、Go のデータ削除、通知など)を飛ばせないようにするためです。
+  ルール(確認入力、通知など)を飛ばせないようにするためです。
 
 ## 技術スタック
 
@@ -49,14 +52,15 @@
 | E2E テスト | Playwright | 1.64 |
 | Lint | ESLint | 9.39 |
 | ランタイム | Node.js | 22 |
-| DB | Postgres(本番は Neon、CI は 17) | - |
+| DB | Postgres(本番は Render。Go と共有。CI は 17) | - |
 | ホスティング | Vercel(Web)、Render(Go API と DB) | - |
 | 連携先の Go API | Go、pgx、jwx(別リポジトリ) | 1.27 / 5.11 / 3.3 |
 
 ## 手元で動かす
 
-必要なもの: Node.js、この Web 用の Postgres(無料の [Neon](https://neon.tech) で足ります)、
-動いている Go API(API のリポジトリを参照)。
+必要なもの: Node.js、Postgres(Go API と共有する 1 つ。API のリポジトリの `docker compose up -d db`
+が手軽です)、動いている Go API(API のリポジトリを参照)。先にこの Web のマイグレーションを当て、
+そのあとで Go のマイグレーションを当てます(順序が決まっています)。
 
 ```bash
 npm ci
@@ -76,8 +80,8 @@ npm run dev                    # http://localhost:3000
 | `BETTER_AUTH_URL` | このアプリの公開 URL(末尾に `/` を付けない)。Go の `AUTH_ISSUER` と同じにする。本番では必須。 |
 | `JWT_AUDIENCE` | Go の `AUTH_AUDIENCE` と同じにする。既定は `better-auth-multi-platform-api`。 |
 | `API_BASE_URL` | Go API のベース URL。開発では未設定なら `http://localhost:8080`。本番では必須で、`https` のみ。 |
-| `DATABASE_URL` | 実行時に使う Postgres の接続文字列。Neon なら pooled のもの。本番では `sslmode=require` 以上が必要。 |
-| `DATABASE_URL_UNPOOLED` | `drizzle-kit`(マイグレーション)だけが使う。Neon なら `-pooler` の付かない、直接つなぐもの。 |
+| `DATABASE_URL` | 実行時に使う Postgres の接続文字列(Go API と同じ DB)。本番では `sslmode=require` 以上が必要。 |
+| `DATABASE_URL_UNPOOLED` | `drizzle-kit`(マイグレーション)だけが使う。プーラーを挟まない直接つなぐもの(Render ならプーラー(6432)ではなく直接(5432)の URL。プーラーを使わないなら `DATABASE_URL` と同じ値)。 |
 | `DATABASE_POOL_MAX` | 任意。1 インスタンスの接続数(1〜50、既定 10)。サーバーレスでは小さい値が向く。 |
 | `EMAIL_TRANSPORT` | `console`(開発)か `resend`。本番では `resend` のみ。 |
 | `RESEND_API_KEY`、`EMAIL_FROM` | `EMAIL_TRANSPORT=resend` のときに必要。送信元のドメインを Resend で認証しておく。 |
@@ -95,11 +99,13 @@ npm run dev                    # http://localhost:3000
 
 ## デプロイ
 
-本番の構成は、Web を Vercel と Neon、Go API とその DB を Render に置いています。DB への往復を
+本番の構成は、Web を Vercel、Go API と、両方が使う DB を Render に置いています。DB への往復を
 短くするため、すべて同じリージョン(シンガポール)にそろえています。
 
-1. 本番の Neon に、`npm run db:migrate` でマイグレーションを適用する(unpooled の URL を使う)。
-2. Go API を先に、次にこのアプリをデプロイする(Web の退会が Go を呼ぶため)。
+1. 本番の Render の DB に、`npm run db:migrate` でマイグレーションを適用する。そのあと、Go の
+   マイグレーション(goose)を適用する(この順序は必須)。
+2. このアプリを先に、次に Go API をデプロイする(新しい Go には退会のエンドポイントがなく、古い
+   Web の退会が失敗するため)。
 3. 上の環境変数を Production に設定する。パスワードを含む値は Secret にする。
 4. Vercel Cron(`vercel.json`)が、毎日 `/api/cron/cleanup` を呼び、期限切れのログインリンク、
    期限切れのセッション、古いレート制限の行を消す。`CRON_SECRET` が付かないリクエストでは、
@@ -113,7 +119,7 @@ npm run dev                    # http://localhost:3000
 
 - **Vitest**: ロジック、Better Auth の設定、Server Action の結線、実 Postgres での外部キーや
   マイグレーション、HTTP 越しの `apiRequest`、Cron の削除。
-- **Playwright(E2E)**: ログイン、編集、退会を、本物の Go API と Postgres で通す。
+- **Playwright(E2E)**: ログイン、編集、退会を、本物の Go API と、両方が共有する 1 つの Postgres で通す。
 - 守りたい設定を壊すと、テストが落ちることを、そのつど確かめています。
 - CI(GitHub Actions)は、`check`(型、lint、テスト、ビルド)と `e2e` の 2 ジョブ。DB を使う
   テストが SKIP されると、失敗にします。
