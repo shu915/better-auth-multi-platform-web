@@ -18,7 +18,7 @@ Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / 
 
 ## 守るルール(特に壊しやすいもの)
 - JWT をブラウザに出さない。Go を呼ぶのは `callApi`(サーバー)だけ
-- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す
+- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す。`get-session` の応答にも JWT を載せない(`src/lib/jwt-plugin.ts` の `disableSettingJwtHeader`。外すと、スクリプトが JWT を読める)
 - 紐づけ・解除・退会は「5 分以内のログイン」(`FRESH_SESSION_SECONDS`)を要求する
 - **静的なページ(セッションを読まないページ)を足すと CSP の nonce が付かず止まる。** 足したら本番ビルドを手元で起動して確かめる(E2E は開発サーバーなので捕まえられない)。詳細は docs/design.md
 - 本番の `EMAIL_TRANSPORT` は `resend` だけ。本番の `DATABASE_URL` は `sslmode=require` 以上
