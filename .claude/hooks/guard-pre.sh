@@ -24,13 +24,38 @@ if [[ "$tool" == "Bash" ]]; then
   fi
 fi
 
+# --- rm の再帰削除: 再生成できるものだけ許す ---
+sep='(^|[;&|][[:space:]]*)'
+# 再帰削除してよい名前(消しても、install やビルドで作り直せるもの)
+RM_ALLOWED='node_modules|\.next|\.next-e2e|\.expo|dist|coverage|test-results|playwright-report|tmp|bin|\.turbo'
+
+# rm の再帰削除で、許可リストにない対象を含むなら 0(= 危険)を返す。再帰でない rm や、対象が全部許可なら 1。
+rm_recursive_unsafe() {
+  local cmd="$1" seg tok recursive
+  set -f # 展開させない(* や ? をそのまま文字列として見る)
+  while IFS= read -r seg; do
+    recursive=0
+    for tok in $seg; do
+      [[ "$tok" =~ ^-[a-zA-Z]*[rR][a-zA-Z]*$ || "$tok" == "--recursive" ]] && recursive=1
+    done
+    [[ $recursive -eq 0 ]] && continue
+    for tok in $seg; do
+      [[ "$tok" == -* ]] && continue
+      # 相対パスで、先頭は web/ api/ mobile/ のどれかだけ(web/node_modules など。src/bin のようなものは通さない)。.. ・絶対パス・~・変数・ワイルドカード・引用符も通さない
+      [[ "$tok" =~ ^(\./)?((web|api|mobile)/)?(${RM_ALLOWED})/?$ ]] || { set +f; return 0; }
+    done
+  done < <(grep -Eo "${sep}rm[[:space:]]+[^;&|]*" <<<"$cmd" | sed -E 's/^[;&|[:space:]]*rm[[:space:]]+//')
+  set +f
+  return 1
+}
+
 # --- Bash の危険操作 ---
 if [[ "$tool" == "Bash" ]]; then
   sep='(^|[;&|][[:space:]]*)'
   grep -Eq "${sep}git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(push|clean|reset[[:space:]]+--hard)" <<<"$cmd" \
     && block "git push/clean/reset --hard は人が頼むまでしない(commit はローカルで取り消せるので許可。外に出る push は人が実行する)"
-  grep -Eq "${sep}rm[[:space:]]+-[a-zA-Z]*[rR]" <<<"$cmd" \
-    && block "rm -r は禁止。必要なら人に確認する"
+  rm_recursive_unsafe "$cmd" \
+    && block "rm の再帰削除(-r)は、再生成できるもの(node_modules、.next、dist など)だけ許可。それ以外は人に確認する"
   grep -Eq "npm[[:space:]]+run[[:space:]]+db:(migrate|schema)|drizzle-kit[[:space:]]+(migrate|push)|auth@latest[[:space:]]+generate" <<<"$cmd" \
     && block "マイグレーション/スキーマ再生成(db:migrate, db:schema, drizzle-kit migrate|push)は人が頼んだときだけ。手順を案内するに留める"
 fi
