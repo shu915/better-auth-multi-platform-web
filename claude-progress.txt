@@ -15,8 +15,11 @@ claude-progress.txt (web)
 - CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
 - guard-pre.sh の any 検出を直した(2026-10-19): 正規表現の括弧が閉じておらず、`: any =` や `(x: any)` が通っていた。`any[]` と `Map<string, any>` も止める
 
+- Expo(mobile)対応(PR #22、main に入った): auth.ts に expo() と bearer()、trustedOrigins に betterauthmulti://、/token は Bearer だけ(Cookie なし)のとき HTTP でも通す。スパイクで、iOS シミュレータと Android エミュレータの両方で、ディープリンク → JWT → Go の GET /me まで確認済み。実機は未確認。モバイルの本実装は mobile リポジトリの feature/auth-flow
+- JWT に auth_time(セッションの作成時刻)を載せた(2026-10-19、ブランチ fix/token-auth-time)。盗まれたセッションの Cookie を Bearer として送り直して JWT を取り、退会の「5 分以内のログイン」と通知を通らずに Go の DELETE /me を呼べる穴を、Go 側の鮮度の確認(ブランチ feature/require-fresh-auth-for-delete)と合わせて塞ぐ。デプロイは Web が先、Go が後
+
 ## 実行中のタスク
-- Expo(mobile)対応(ブランチ feature/expo-native-client): auth.ts に expo() と bearer()、trustedOrigins に betterauthmulti://、/token は Bearer だけ(Cookie なし)のとき HTTP でも通す。スパイク(spike/expo-auth、モバイルは spike/auth-flow)で、iOS シミュレータと Android エミュレータの両方で、ディープリンク → JWT → Go の GET /me まで確認済み。実機は未確認。モバイルの本実装は mobile リポジトリの feature/auth-flow
+- fix/token-auth-time の PR(Go の対応と組み。Web を先に出す)
 
 ## 未確認
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)

@@ -529,6 +529,53 @@ describe("endpoints that only our Server Actions may call", () => {
     expect(((await res.json()) as { token: string }).token.split(".")).toHaveLength(3);
   });
 
+  // The payload of a JWT (the signature is not checked here; verifying it is the Go API's job).
+  const payloadOf = (token: string) =>
+    JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString()) as Record<string, unknown>;
+
+  it("puts the time of the sign-in in the JWT, and no personal data", async () => {
+    const t = createTestAuth();
+    const before = Math.floor(Date.now() / 1000);
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    const after = Math.floor(Date.now() / 1000);
+
+    const res = await t.auth.handler(
+      tokenRequest({ authorization: `Bearer ${sessionTokenOf(cookie)}` }),
+    );
+    const payload = payloadOf(((await res.json()) as { token: string }).token);
+
+    expect(payload.auth_time).toBeGreaterThanOrEqual(before);
+    expect(payload.auth_time).toBeLessThanOrEqual(after);
+    // Nothing else is embedded: no email, name or session fields.
+    expect(Object.keys(payload).sort()).toEqual(["aud", "auth_time", "exp", "iat", "iss", "sub"]);
+  });
+
+  it("keeps the sign-in time when a new JWT is issued later from the same session", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    const first = payloadOf(
+      (
+        (await (
+          await t.auth.handler(tokenRequest({ authorization: `Bearer ${sessionTokenOf(cookie)}` }))
+        ).json()) as { token: string }
+      ).token,
+    );
+
+    // An hour later the same session mints another JWT: it is newer (iat), the sign-in is not.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(Date.now() + 60 * 60 * 1000));
+    const second = payloadOf(
+      (
+        (await (
+          await t.auth.handler(tokenRequest({ authorization: `Bearer ${sessionTokenOf(cookie)}` }))
+        ).json()) as { token: string }
+      ).token,
+    );
+
+    expect(second.iat as number).toBeGreaterThan(first.iat as number);
+    expect(second.auth_time).toBe(first.auth_time);
+  });
+
   it("refuses a bearer header that comes with a cookie", async () => {
     const t = createTestAuth();
     const cookie = await t.signInWithMagicLink("root@example.com");
