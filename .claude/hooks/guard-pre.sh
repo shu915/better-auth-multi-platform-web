@@ -46,7 +46,7 @@ if [[ "$tool" =~ ^(Edit|Write|MultiEdit)$ && -n "$rel" ]]; then
   # --- 型・lint・テストを黙らせる回避の禁止 ---
   case "$rel" in
     *.ts|*.tsx|*.mts|*.mjs)
-      grep -Eq '@ts-ignore|@ts-expect-error|eslint-disable|as unknown as|as any\b|:[[:space:]]*any[[:space:]]*[;,=)>|\]]' <<<"$content" \
+      grep -Eq '@ts-ignore|@ts-expect-error|eslint-disable|as unknown as|as any\b|:[[:space:]]*any[[:space:]]*[],;=)>|[]|[<,][[:space:]]*any[[:space:]]*[>,]' <<<"$content" \
         && block "@ts-ignore / @ts-expect-error / eslint-disable / as unknown as / any は使わない。型を正しく直す"
       ;;
   esac

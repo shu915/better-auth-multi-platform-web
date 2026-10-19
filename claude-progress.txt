@@ -1,5 +1,5 @@
 claude-progress.txt (web)
-最終更新: 2026-10-10
+最終更新: 2026-10-19
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
 機能の設計の詳細は docs/design.md、デプロイと公開前チェックは docs/deploy.md。ここには状況だけを書く。
 
@@ -13,9 +13,10 @@ claude-progress.txt (web)
 - 本番デプロイ(2026-10-09): Vercel + Neon と Render(いずれもシンガポール)。ログイン、プロフィール、退会、Google 紐づけ、レート制限、HSTS、CSP、Cron の手動実行を人が確認済み
 - README を書いた
 - CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
+- guard-pre.sh の any 検出を直した(2026-10-19): 正規表現の括弧が閉じておらず、`: any =` や `(x: any)` が通っていた。`any[]` と `Map<string, any>` も止める
 
 ## 実行中のタスク
-- なし(ブランチ docs/slim-claude-md に、CLAUDE.md の整理が未コミットで載っている)
+- なし
 
 ## 未確認
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
