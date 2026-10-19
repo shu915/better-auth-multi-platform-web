@@ -3,6 +3,7 @@ import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { magicLink } from "better-auth/plugins";
 import { jwtPlugin } from "@/lib/jwt-plugin";
+import { nativeClientPlugins } from "@/lib/native-clients";
 import {
   FRESH_SESSION_SECONDS,
   googleAuthOptions,
@@ -89,6 +90,7 @@ function createTestAuth(
           tokens.set(email, token);
         },
       }),
+      ...nativeClientPlugins(), // as in auth.ts: a native app sends the session token as a bearer token
       // Same shape as auth.ts, so the /token and /jwks endpoints can be tested.
       jwtPlugin({ issuer: BASE, audience: "api.test" }),
     ],
@@ -510,7 +512,103 @@ describe("endpoints that only our Server Actions may call", () => {
     expect(text).not.toMatch(/eyJ/); // a JWT starts with this
   });
 
-  it("does not hand a JWT to a script through get-session", async () => {
+  // The session cookie's value, which is also what a native app sends as its bearer token.
+  const sessionTokenOf = (cookie: string) => cookie.slice(cookie.indexOf("=") + 1);
+  const tokenRequest = (headers: Record<string, string>) =>
+    new Request(`${BASE}/api/auth/token`, { headers });
+
+  it("issues a JWT over HTTP to a native app: a valid bearer token and no cookie", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const res = await t.auth.handler(
+      tokenRequest({ authorization: `Bearer ${sessionTokenOf(cookie)}` }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { token: string }).token.split(".")).toHaveLength(3);
+  });
+
+  it("refuses a bearer header that comes with a cookie", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    // A bearer header does not count when a Cookie header is present, valid token or not.
+    for (const authorization of ["Bearer not-a-real-token", `Bearer ${sessionTokenOf(cookie)}`]) {
+      const res = await t.auth.handler(tokenRequest({ authorization, cookie, origin: BASE }));
+      const text = await res.text();
+      expect(res.status).toBe(403);
+      expect(text).toContain("SERVER_ONLY");
+      expect(text).not.toMatch(/eyJ/);
+    }
+  });
+
+  it("gives nothing for a bearer token that is not a session, even without a cookie", async () => {
+    const t = createTestAuth();
+    await t.signInWithMagicLink("root@example.com");
+
+    for (const authorization of ["Bearer not-a-real-token", "Bearer ", "Basic abc", "bearer"]) {
+      const res = await t.auth.handler(tokenRequest({ authorization }));
+      expect(res.status).not.toBe(200);
+      expect(await res.text()).not.toMatch(/eyJ/);
+    }
+  });
+
+  it("keeps every other server-only endpoint closed to a bearer-only request", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    const authorization = `Bearer ${sessionTokenOf(cookie)}`;
+
+    for (const path of ["update-user", "delete-user", "get-access-token", "refresh-token"]) {
+      const res = await t.auth.handler(
+        new Request(`${BASE}/api/auth/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization },
+          body: JSON.stringify({ name: "x", providerId: "google" }),
+        }),
+      );
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("SERVER_ONLY");
+    }
+    expect(await t.userByEmail("root@example.com")).not.toBeNull();
+  });
+
+  // Where the session token may and may not appear (see native-clients.ts).
+  it("does not accept the raw session token as a bearer token", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+
+    const session = await t.auth.handler(
+      new Request(`${BASE}/api/auth/get-session`, { headers: { cookie, origin: BASE } }),
+    );
+    const raw = ((await session.json()) as { session?: { token?: string } }).session?.token;
+    // get-session includes the raw token in its body; only the signed value counts as a bearer token.
+    expect(raw).toBeTruthy();
+
+    const attempt = await t.auth.handler(tokenRequest({ authorization: `Bearer ${raw}` }));
+    expect(attempt.status).not.toBe(200);
+    expect(await attempt.text()).not.toMatch(/eyJ/);
+  });
+
+  it("sends no session token header", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    // Past the session's update age (a day), get-session sets the session cookie again.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(Date.now() + 2 * 24 * 60 * 60 * 1000));
+
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/get-session`, { headers: { cookie, origin: BASE } }),
+    );
+
+    expect(res.headers.get("set-cookie")).toBeTruthy(); // the case under test: the cookie was set again
+    expect(res.headers.get("set-auth-token")).toBeNull();
+    expect((res.headers.get("access-control-expose-headers") ?? "").toLowerCase()).not.toContain(
+      "set-auth-token",
+    );
+  });
+
+  it("sends no JWT header with get-session", async () => {
     const t = createTestAuth();
     const cookie = await t.signInWithMagicLink("root@example.com");
 
@@ -518,13 +616,31 @@ describe("endpoints that only our Server Actions may call", () => {
       new Request(`${BASE}/api/auth/get-session`, { headers: { cookie, origin: BASE } }),
     );
 
-    // The jwt plugin adds the JWT to get-session's response as "set-auth-jwt" unless told not to.
-    // A script that can call get-session (the cookie goes along) would read it and have a JWT.
     expect(res.status).toBe(200);
     expect(res.headers.get("set-auth-jwt")).toBeNull();
     expect((res.headers.get("access-control-expose-headers") ?? "").toLowerCase()).not.toContain(
       "set-auth-jwt",
     );
+  });
+
+  it("accepts a bearer header only at /token: link-social still needs a recent sign-in", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signInWithMagicLink("root@example.com");
+    makeSessionsStale(); // linking needs a recent sign-in
+
+    const res = await t.auth.handler(
+      new Request(`${BASE}/api/auth/link-social`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${sessionTokenOf(cookie)}`,
+        },
+        body: JSON.stringify({ provider: "google", callbackURL: "/profile" }),
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await t.linkedProviders(cookie)).toEqual([]);
   });
 
   it("still issues the JWT to our own server code, and still serves the public keys over HTTP", async () => {

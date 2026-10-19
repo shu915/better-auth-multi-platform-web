@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { expo } from "@better-auth/expo";
 import { nextCookies } from "better-auth/next-js";
 import { magicLink } from "better-auth/plugins";
 import { db } from "@/lib/db";
@@ -9,6 +10,7 @@ import { googleAuthOptions } from "@/lib/google-auth-options";
 import { resolveGoogleCredentials } from "@/lib/google-oauth";
 import { jwtPlugin } from "@/lib/jwt-plugin";
 import { linkedAccountEmail } from "@/lib/linked-accounts";
+import { nativeClientPlugins } from "@/lib/native-clients";
 import { allowMagicLinkTo } from "@/lib/rate-limits";
 import * as schema from "@/db/schema";
 
@@ -19,6 +21,12 @@ if (!baseURL) throw new Error("BETTER_AUTH_URL is required in production");
 
 // Must match the audience the Go API verifies.
 const audience = process.env.JWT_AUDIENCE ?? "better-auth-multi-platform-api";
+
+// The native app (Expo, repo better-auth-multi-platform-mobile) comes back from the browser with a
+// deep link of this scheme (app.json "scheme"), carrying the session. Better Auth only redirects
+// to a trusted origin, so the scheme must be listed. In development the expo plugin also trusts
+// "exp://" (Expo Go); that is not added here, so it never reaches production.
+const nativeAppOrigin = "betterauthmulti://";
 
 // The user is created by the magic link (the root identity). Google is an optional extra way to
 // sign in that a signed-in user links from /profile; it can never create a user. It is on only
@@ -46,6 +54,7 @@ const policy = googleAuthOptions(google, {
 
 export const auth = betterAuth({
   baseURL,
+  trustedOrigins: [nativeAppOrigin],
   database: drizzleAdapter(db, { provider: "pg", schema }),
   ...policy,
   // Count rate limits in the database, not in memory: on a serverless host (Vercel) each request
@@ -79,6 +88,14 @@ export const auth = betterAuth({
       },
     }),
     jwtPlugin({ issuer: baseURL, audience }),
+    // Native apps: the session token as "Authorization: Bearer ..." (signed value only, and the
+    // "set-auth-token" response header removed). Only /token accepts it from outside; see
+    // native-clients.ts and isBearerOnly in google-auth-options.ts.
+    ...nativeClientPlugins(),
+    // Native apps: after a magic link (or a callback) redirects to a trusted deep link, it appends
+    // the session cookie to that link so the app can store it. Needs the app's scheme in
+    // trustedOrigins above.
+    expo(),
     // Lets a Server Action (deleteAccount) clear the session cookie. Must stay last.
     nextCookies(),
   ],

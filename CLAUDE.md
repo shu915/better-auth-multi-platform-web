@@ -18,7 +18,7 @@ Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / 
 
 ## 守るルール(特に壊しやすいもの)
 - JWT をブラウザに出さない。Go を呼ぶのは `callApi`(サーバー)だけ
-- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。デスクトップやモバイルが Go を直接呼ぶ構成にするときは見直す。`get-session` の応答にも JWT を載せない(`src/lib/jwt-plugin.ts` の `disableSettingJwtHeader`。外すと、スクリプトが JWT を読める)
+- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。**例外は `/token` だけ**: `Authorization: Bearer` があり、かつ Cookie がないリクエストは通す(ネイティブアプリ用。`isBearerOnly`。ルールは docs/design.md)。Bearer は `/token` 以外では受け付けない。JWT は `/token` からだけ出す(`src/lib/jwt-plugin.ts`)
 - 紐づけ・解除・退会は「5 分以内のログイン」(`FRESH_SESSION_SECONDS`)を要求する
 - **静的なページ(セッションを読まないページ)を足すと CSP の nonce が付かず止まる。** 足したら本番ビルドを手元で起動して確かめる(E2E は開発サーバーなので捕まえられない)。詳細は docs/design.md
 - 本番の `EMAIL_TRANSPORT` は `resend` だけ。本番の `DATABASE_URL` は `sslmode=require` 以上
@@ -67,7 +67,7 @@ macOS で `npm install` すると、`package-lock.json` から `@rolldown/bindin
 - 人が頼むまでコミットしない(未コミットで残し、先に読んでもらう)。push は hook が止めるので人が実行する。`.github/workflows/` の編集は hook では止めない。CI を緩める変更(テストの削除、SKIP を許す、など)は改ざんとして扱う
 - `npm run db:migrate` は実行しない。`npm run db:schema` も、頼まれたときだけ(手順は docs/deploy.md)
 - `.env` 系のファイルは読まない
-- PreToolUse でブロック(`.claude/hooks/`): `.env` 系の読み取り(`.env.example` は可)、`git push/clean/reset --hard`、`rm -r`、`db:migrate` / `db:schema` / `drizzle-kit migrate|push`、`drizzle/`・`src/db/schema.ts`・`package-lock.json` の編集、`@ts-ignore` / `eslint-disable` / `as unknown as` / `any` の追加、テストや設定への `skip` / `only` / `strict:false` / ルール `off` / `exclude`
+- PreToolUse でブロック(`.claude/hooks/`): `.env` 系の読み取り(`.env.example` は可)、`git push/clean/reset --hard`、`rm -r`(`node_modules`・`.next`・`dist` などの再生成できるものだけ許可。`..`・絶対パス・ワイルドカード・それ以外は不可)、`db:migrate` / `db:schema` / `drizzle-kit migrate|push`、`drizzle/`・`src/db/schema.ts`・`package-lock.json` の編集、`@ts-ignore` / `eslint-disable` / `as unknown as` / `any` の追加、テストや設定への `skip` / `only` / `strict:false` / ルール `off` / `exclude`
 - ブロックされたら回避せず、理由を報告して人の指示を待つ
 
 ## 進捗ファイル
