@@ -18,7 +18,7 @@ Next.js 16(App Router)/ React 19 / TypeScript / Tailwind CSS v4 / Better Auth / 
 
 ## 守るルール(特に壊しやすいもの)
 - JWT をブラウザに出さない。Go を呼ぶのは `callApi`(サーバー)だけ
-- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。**例外は `/token` だけ**: `Authorization: Bearer` があり、かつ Cookie がないリクエストは通す(ネイティブアプリ用。`isBearerOnly`。ルールは docs/design.md)。Bearer は `/token` 以外では受け付けない。JWT は `/token` からだけ出す(`src/lib/jwt-plugin.ts`)
+- `/api/auth/delete-user`・`/update-user`・`/token` などは HTTP では 403 `SERVER_ONLY`(`google-auth-options.ts` の `hooks.before`)。Cookie だけで Server Action のチェックを素通りさせないため。**例外は `/token` だけ**: `Authorization: Bearer` があり、かつ Cookie がないリクエストは通す(ネイティブアプリ用。`isBearerOnly`。ルールは docs/design.md)。Bearer は `/token` 以外では受け付けない。JWT は `/token` からだけ出す(`src/lib/jwt-plugin.ts`)。JWT の `auth_time`(セッションの作成時刻)は外さない(Go が `DELETE /me` の新しさの確認に使う。デプロイは Web が先、Go が後)
 - 紐づけ・解除・退会は「5 分以内のログイン」(`FRESH_SESSION_SECONDS`)を要求する
 - **静的なページ(セッションを読まないページ)を足すと CSP の nonce が付かず止まる。** 足したら本番ビルドを手元で起動して確かめる(E2E は開発サーバーなので捕まえられない)。詳細は docs/design.md
 - 本番の `EMAIL_TRANSPORT` は `resend` だけ。本番の `DATABASE_URL` は `sslmode=require` 以上

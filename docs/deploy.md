@@ -1,5 +1,10 @@
 # デプロイと公開前チェック
 
+## Go との順序(auth_time)
+JWT に `auth_time`(セッションの作成時刻)を載せている(`src/lib/jwt-plugin.ts`)。Go の `DELETE /me` は、これが 5 分以内であることを要求する(Go の docs/design.md)。
+- **デプロイは Web が先、Go が後。** 先に Go を出すと、`auth_time` のない JWT で退会が全部 403 になる
+- **ロールバックも同じ制約を受ける。** Web だけを `auth_time` を載せる前に戻すと、退会が全部 403 になる。戻すなら Go を先に戻す
+
 ## デプロイ先
 - Web: **Vercel + Neon**(サーバーレス)。API(Go)とその DB は **Render**。Go は Vercel の https の JWKS(`<本番の URL>/api/auth/jwks`)を取りに来るので、Go の `AUTH_ISSUER` は Vercel の本番 URL にする
 - Neon は **pooled URL**(ホスト名に `-pooler`)。インスタンスの数だけプールが増えるので `DATABASE_POOL_MAX` は小さく(3 前後)。マイグレーションは `DATABASE_URL_UNPOOLED`
