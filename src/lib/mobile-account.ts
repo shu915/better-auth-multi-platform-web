@@ -19,9 +19,9 @@ import {
 export type MobileAccountDeps = {
   getSession: (
     headers: Headers,
-  ) => Promise<{ user: { email: string }; session: { createdAt: Date | string } } | null>;
-  /** The steps of deleteAccount, bound to this request's session. */
-  steps: (headers: Headers) => DeleteAccountDeps;
+  ) => Promise<{ user: { id: string; email: string }; session: { createdAt: Date | string } } | null>;
+  /** The steps of deleteAccount, bound to this request's session (`userId` is for log lines). */
+  steps: (headers: Headers, userId: string) => DeleteAccountDeps;
   now?: () => Date;
 };
 
@@ -61,14 +61,20 @@ export async function deleteAccountFromApp(
       sessionCreatedAt: new Date(session.session.createdAt),
       now: (deps.now ?? (() => new Date()))(),
     },
-    deps.steps(request.headers),
+    deps.steps(request.headers, session.user.id),
   );
 
   if (!result.ok) {
     if (result.reason === "failed") {
-      console.error(`[mobile-account] account deletion failed at ${result.step}`, result.error);
+      console.error(
+        `[mobile-account] account deletion failed at ${result.step} user=${session.user.id}`,
+        result.error,
+      );
     }
     return failureResponse(result);
   }
+  // A deletion must be traceable afterwards (the user may not have made it), like the profile
+  // page's. The id, not the address.
+  console.info(`[mobile-account] account deleted user=${session.user.id}`);
   return respond(200, { deleted: true });
 }

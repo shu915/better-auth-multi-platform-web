@@ -94,6 +94,24 @@ describe("deleteAccountFromApp", () => {
     expect(await t.sessionOf(cookie)).toBeNull();
   });
 
+  it("logs the deletion with the user id, and not the address", async () => {
+    const t = createTestAuth();
+    const { cookie, bearer } = await t.signIn("a@example.com");
+    const userId = (await t.sessionOf(cookie))?.user.id ?? "";
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    await deleteAccountFromApp(
+      del({ authorization: `Bearer ${bearer}` }, { confirmEmail: "a@example.com" }),
+      t.deps,
+    );
+    const lines = info.mock.calls.map((call) => call.join(" "));
+    info.mockRestore();
+
+    expect(userId).not.toBe("");
+    expect(lines).toContain(`[mobile-account] account deleted user=${userId}`);
+    expect(lines.join("\n")).not.toContain("a@example.com");
+  });
+
   it("revokes the user's other sessions, not only the one that asked", async () => {
     const t = createTestAuth();
     const other = await t.signIn("a@example.com");

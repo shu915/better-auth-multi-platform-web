@@ -9,7 +9,7 @@ import { deleteAccountFromApp } from "@/lib/mobile-account";
 export async function DELETE(request: Request): Promise<Response> {
   const { status, body } = await deleteAccountFromApp(request, {
     getSession: (headers) => auth.api.getSession({ headers }),
-    steps: (headers) => ({
+    steps: (headers, userId) => ({
       revokeOtherSessions: async () => {
         await auth.api.revokeOtherSessions({ headers });
       },
@@ -29,7 +29,9 @@ export async function DELETE(request: Request): Promise<Response> {
           try {
             await sendEmail({ to, subject, text, html });
           } catch (err) {
-            console.error("[email] failed to send the account-deleted notice", err);
+            // The notice is the only way to notice a deletion the user did not make, so say which
+            // user it was for (not the address).
+            console.error(`[email] failed to send the account-deleted notice user=${userId}`, err);
           }
         });
       },
