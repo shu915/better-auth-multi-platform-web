@@ -12,6 +12,7 @@ import {
   exchangeCode,
   identifierOf,
   sessionRedirectPlugins,
+  setsSession,
   replaceCookieWithCode,
 } from "@/lib/mobile-code";
 
@@ -296,6 +297,37 @@ describe("helpers", () => {
     expect(await replaceCookieWithCode("https://example.com/?cookie=x", deps)).toBeNull();
     expect(await replaceCookieWithCode(`${SCHEME}/?error=INVALID_TOKEN`, deps)).toBeNull();
     expect(await replaceCookieWithCode("not a url", deps)).toBeNull();
+    expect(stored).toEqual([]);
+  });
+});
+
+describe("setsSession", () => {
+  it("is true only for a cookie that gives the browser a session", () => {
+    expect(setsSession("better-auth.session_token=abc.def; Path=/; HttpOnly")).toBe(true);
+    expect(setsSession("__Secure-better-auth.session_token=abc.def; Path=/; Secure")).toBe(true);
+    // expo() joins several Set-Cookie headers into one text: the session can come after another.
+    expect(setsSession("better-auth.oauth_state=; Max-Age=0; Path=/, better-auth.session_token=abc; Path=/")).toBe(true);
+  });
+
+  it("is false for a cookie that only forgets something", () => {
+    expect(setsSession("better-auth.oauth_state=; Max-Age=0; Path=/")).toBe(false);
+    expect(setsSession("better-auth.session_token=; Max-Age=0; Path=/")).toBe(false);
+    expect(setsSession("")).toBe(false);
+    expect(setsSession("other.session_token=abc")).toBe(false);
+  });
+
+  it("keeps the redirect as it is, minus the cookie, when no session was made", async () => {
+    const stored: string[] = [];
+    const deps = { seal: async (c: string) => c, store: async (id: string) => void stored.push(id) };
+    const next = await replaceCookieWithCode(
+      `${SCHEME}/?state=s1&cookie=${encodeURIComponent("better-auth.oauth_state=; Max-Age=0; Path=/")}`,
+      deps,
+    );
+    const url = new URL(next ?? "");
+    expect(url.searchParams.get("state")).toBe("s1");
+    expect(url.searchParams.has("cookie")).toBe(false);
+    expect(url.searchParams.has("code")).toBe(false);
+    expect(url.searchParams.has("error")).toBe(false);
     expect(stored).toEqual([]);
   });
 });
