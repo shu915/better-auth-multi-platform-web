@@ -1,7 +1,6 @@
 import { after } from "next/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { expo } from "@better-auth/expo";
 import { nextCookies } from "better-auth/next-js";
 import { magicLink } from "better-auth/plugins";
 import { db } from "@/lib/db";
@@ -9,6 +8,7 @@ import { sendEmail } from "@/lib/email";
 import { googleAuthOptions } from "@/lib/google-auth-options";
 import { resolveGoogleCredentials } from "@/lib/google-oauth";
 import { jwtPlugin } from "@/lib/jwt-plugin";
+import { sessionRedirectPlugins } from "@/lib/mobile-code";
 import { linkedAccountEmail } from "@/lib/linked-accounts";
 import { nativeClientPlugins } from "@/lib/native-clients";
 import { allowMagicLinkTo } from "@/lib/rate-limits";
@@ -92,10 +92,11 @@ export const auth = betterAuth({
     // "set-auth-token" response header removed). Only /token accepts it from outside; see
     // native-clients.ts and isBearerOnly in google-auth-options.ts.
     ...nativeClientPlugins(),
-    // Native apps: after a magic link (or a callback) redirects to a trusted deep link, it appends
-    // the session cookie to that link so the app can store it. Needs the app's scheme in
-    // trustedOrigins above.
-    expo(),
+    // Native apps: after a magic link (or a callback) redirects to a trusted deep link, expo()
+    // appends the session cookie to that link, and mobileCodeExchange() then replaces it with a
+    // one-time code (the session is not left in a link any app can read). Needs the app's scheme
+    // in trustedOrigins above. The order is defined in sessionRedirectPlugins and must not change.
+    ...sessionRedirectPlugins(),
     // Lets a Server Action (deleteAccount) clear the session cookie. Must stay last.
     nextCookies(),
   ],
