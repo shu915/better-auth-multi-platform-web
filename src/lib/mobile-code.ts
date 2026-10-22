@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { BetterAuthPlugin } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
+import { symmetricEncrypt } from "better-auth/crypto";
 import { expo } from "@better-auth/expo";
 
 // Handing the session to the native app without putting it in a URL.
@@ -40,15 +41,17 @@ export const isVerifier = (value: unknown): value is string =>
 /** What is stored under a code. Only a hash of the code is the key: the code is not in the database. */
 export const identifierOf = (code: string) => CODE_PREFIX + sha256(code).toString("base64url");
 
-type Stored = { cookie: string; challenge: string };
+// `sealed` is the session cookie encrypted with the server's secret (see `seal`): what is stored is
+// not usable as a session by anyone who can read the database.
+type Stored = { sealed: string; challenge: string };
 
 function parseStored(value: string): Stored | null {
   try {
     const raw: unknown = JSON.parse(value);
     if (typeof raw !== "object" || raw === null) return null;
-    const { cookie, challenge } = raw as Record<string, unknown>;
-    if (typeof cookie === "string" && cookie !== "" && isChallenge(challenge)) {
-      return { cookie, challenge };
+    const { sealed, challenge } = raw as Record<string, unknown>;
+    if (typeof sealed === "string" && sealed !== "" && isChallenge(challenge)) {
+      return { sealed, challenge };
     }
   } catch {
     // fall through
@@ -59,9 +62,18 @@ function parseStored(value: string): Stored | null {
 export type ExchangeDeps = {
   /** Reads and deletes in one step (Better Auth's consumeVerificationValue): usable once. */
   consume: (identifier: string) => Promise<{ value: string } | null>;
+  /** Undoes `seal`. Throws when the text was not sealed by this server. */
+  open: (sealed: string) => Promise<string>;
 };
 
-export type ExchangeResult = { ok: true; cookie: string } | { ok: false };
+// `why` is for the server's log only (never sent to the caller, who gets one answer for every
+// failure): which check refused. It holds no secret.
+export type ExchangeFailure =
+  | "malformed"
+  | "unknown-or-used-or-expired"
+  | "unreadable-record"
+  | "verifier-mismatch";
+export type ExchangeResult = { ok: true; cookie: string } | { ok: false; why: ExchangeFailure };
 
 /**
  * Trades a code and the verifier for the session cookie. Every failure is the same answer, and the
@@ -73,16 +85,22 @@ export async function exchangeCode(
 ): Promise<ExchangeResult> {
   const { code, verifier } = input;
   if (typeof code !== "string" || code.length < 20 || code.length > 100 || !isVerifier(verifier)) {
-    return { ok: false };
+    return { ok: false, why: "malformed" };
   }
   const record = await deps.consume(identifierOf(code));
-  if (!record) return { ok: false };
+  if (!record) return { ok: false, why: "unknown-or-used-or-expired" };
   const stored = parseStored(record.value);
-  if (!stored) return { ok: false };
+  if (!stored) return { ok: false, why: "unreadable-record" };
   const expected = Buffer.from(stored.challenge);
   const actual = Buffer.from(challengeOf(verifier));
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return { ok: false };
-  return { ok: true, cookie: stored.cookie };
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return { ok: false, why: "verifier-mismatch" };
+  }
+  try {
+    return { ok: true, cookie: await deps.open(stored.sealed) };
+  } catch {
+    return { ok: false, why: "unreadable-record" };
+  }
 }
 
 /**
@@ -93,7 +111,11 @@ export async function exchangeCode(
  */
 export async function replaceCookieWithCode(
   location: string,
-  store: (identifier: string, value: string, expiresAt: Date) => Promise<void>,
+  deps: {
+    /** Encrypts the cookie before it is stored (Better Auth's symmetricEncrypt with the secret). */
+    seal: (cookie: string) => Promise<string>;
+    store: (identifier: string, value: string, expiresAt: Date) => Promise<void>;
+  },
   now: Date = new Date(),
 ): Promise<string | null> {
   let url: URL;
@@ -117,9 +139,9 @@ export async function replaceCookieWithCode(
   }
 
   const code = randomBytes(32).toString("base64url");
-  await store(
+  await deps.store(
     identifierOf(code),
-    JSON.stringify({ cookie, challenge } satisfies Stored),
+    JSON.stringify({ sealed: await deps.seal(cookie), challenge } satisfies Stored),
     new Date(now.getTime() + CODE_TTL_MS),
   );
   url.searchParams.set("code", code);
@@ -142,8 +164,11 @@ export function mobileCodeExchange(): BetterAuthPlugin {
           handler: createAuthMiddleware(async (ctx) => {
             const location = ctx.context.responseHeaders?.get("location");
             if (!location) return;
-            const next = await replaceCookieWithCode(location, async (identifier, value, expiresAt) => {
-              await ctx.context.internalAdapter.createVerificationValue({ identifier, value, expiresAt });
+            const next = await replaceCookieWithCode(location, {
+              seal: (cookie) => symmetricEncrypt({ key: ctx.context.secretConfig, data: cookie }),
+              store: async (identifier, value, expiresAt) => {
+                await ctx.context.internalAdapter.createVerificationValue({ identifier, value, expiresAt });
+              },
             });
             if (next !== null) ctx.setHeader("location", next);
           }),

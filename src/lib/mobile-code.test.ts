@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { betterAuth } from "better-auth";
+import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { magicLink } from "better-auth/plugins";
 import { googleAuthOptions } from "@/lib/google-auth-options";
@@ -53,8 +54,16 @@ function createTestAuth({ withPlugin = true }: { withPlugin?: boolean } = {}) {
     const { internalAdapter } = await auth.$context;
     return internalAdapter.consumeVerificationValue(identifier);
   };
+  const open = async (sealed: string) => {
+    const { secretConfig } = await auth.$context;
+    return symmetricDecrypt({ key: secretConfig, data: sealed });
+  };
+  const seal = async (cookie: string) => {
+    const { secretConfig } = await auth.$context;
+    return symmetricEncrypt({ key: secretConfig, data: cookie });
+  };
 
-  return { auth, openLink, consume };
+  return { auth, openLink, consume, open, seal, deps: { consume, open } };
 }
 
 const newVerifier = () => randomBytes(32).toString("base64url");
@@ -123,7 +132,7 @@ describe("exchanging the code", () => {
     const t = createTestAuth();
     const { code, verifier } = await signInForCode(t);
 
-    const result = await exchangeCode({ code, verifier }, { consume: t.consume });
+    const result = await exchangeCode({ code, verifier }, t.deps);
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -136,29 +145,29 @@ describe("exchanging the code", () => {
   it("refuses a code taken from the link without the verifier", async () => {
     const t = createTestAuth();
     const { code } = await signInForCode(t);
-    const result = await exchangeCode({ code, verifier: newVerifier() }, { consume: t.consume });
-    expect(result).toEqual({ ok: false });
+    const result = await exchangeCode({ code, verifier: newVerifier() }, t.deps);
+    expect(result).toMatchObject({ ok: false });
   });
 
   it("uses the code up on the first try, so a wrong verifier cannot be retried", async () => {
     const t = createTestAuth();
     const { code, verifier } = await signInForCode(t);
-    expect(await exchangeCode({ code, verifier: newVerifier() }, { consume: t.consume })).toEqual({ ok: false });
-    expect(await exchangeCode({ code, verifier }, { consume: t.consume })).toEqual({ ok: false });
+    expect(await exchangeCode({ code, verifier: newVerifier() }, t.deps)).toMatchObject({ ok: false });
+    expect(await exchangeCode({ code, verifier }, t.deps)).toMatchObject({ ok: false });
   });
 
   it("does not give the session twice", async () => {
     const t = createTestAuth();
     const { code, verifier } = await signInForCode(t);
-    expect((await exchangeCode({ code, verifier }, { consume: t.consume })).ok).toBe(true);
-    expect((await exchangeCode({ code, verifier }, { consume: t.consume })).ok).toBe(false);
+    expect((await exchangeCode({ code, verifier }, t.deps)).ok).toBe(true);
+    expect((await exchangeCode({ code, verifier }, t.deps)).ok).toBe(false);
   });
 
   it("does not accept a code for another sign-in's verifier", async () => {
     const t = createTestAuth();
     const first = await signInForCode(t, "a@example.com");
     const second = await signInForCode(t, "b@example.com");
-    expect(await exchangeCode({ code: first.code, verifier: second.verifier }, { consume: t.consume })).toEqual({ ok: false });
+    expect(await exchangeCode({ code: first.code, verifier: second.verifier }, t.deps)).toMatchObject({ ok: false });
   });
 
   it("expires after CODE_TTL_MS", async () => {
@@ -173,13 +182,81 @@ describe("exchanging the code", () => {
     // And a record that has expired is refused.
     const old = await replaceCookieWithCode(
       `${SCHEME}/?cookie=x%3Dy&cc=${challengeOf(verifier)}`,
-      async (identifier, value, expiresAt) => {
-        await internalAdapter.createVerificationValue({ identifier, value, expiresAt });
+      {
+        seal: t.seal,
+        store: async (identifier, value, expiresAt) => {
+          await internalAdapter.createVerificationValue({ identifier, value, expiresAt });
+        },
       },
       new Date(Date.now() - 10 * 60_000),
     );
     const oldCode = new URL(old ?? "").searchParams.get("code") ?? "";
-    expect(await exchangeCode({ code: oldCode, verifier }, { consume: t.consume })).toEqual({ ok: false });
+    expect(await exchangeCode({ code: oldCode, verifier }, t.deps)).toMatchObject({ ok: false });
+  });
+
+  it("tells the log which check refused, and nothing else (the caller gets one answer)", async () => {
+    const t = createTestAuth();
+    const { code, verifier } = await signInForCode(t);
+    const wrong = await exchangeCode({ code, verifier: newVerifier() }, t.deps);
+    expect(wrong).toEqual({ ok: false, why: "verifier-mismatch" });
+    const used = await exchangeCode({ code, verifier }, t.deps);
+    expect(used).toEqual({ ok: false, why: "unknown-or-used-or-expired" });
+    const bad = await exchangeCode({ code: "short", verifier }, t.deps);
+    expect(bad).toEqual({ ok: false, why: "malformed" });
+    // Nothing secret in what is logged.
+    expect(JSON.stringify([wrong, used, bad])).not.toContain(code);
+    expect(JSON.stringify([wrong, used, bad])).not.toContain(verifier);
+  });
+
+  it("does not keep a usable session in the database: the stored cookie is encrypted", async () => {
+    const t = createTestAuth();
+    const { code } = await signInForCode(t);
+    const { internalAdapter } = await t.auth.$context;
+    const record = await internalAdapter.findVerificationValue(identifierOf(code));
+    expect(record?.value).toBeTruthy();
+    expect(record?.value).not.toContain("session_token");
+    expect(record?.value).not.toContain("better-auth");
+  });
+
+  it("answers the same when the stored record cannot be opened (a different secret)", async () => {
+    const t = createTestAuth();
+    const { code, verifier } = await signInForCode(t);
+    const result = await exchangeCode(
+      { code, verifier },
+      { consume: t.consume, open: async () => { throw new Error("wrong key"); } },
+    );
+    expect(result).toEqual({ ok: false, why: "unreadable-record" });
+  });
+
+  it("answers unreadable-record for a stored value that is not what this plugin writes", async () => {
+    const t = createTestAuth();
+    const verifier = newVerifier();
+    const consumeJunk = async () => ({ value: "not json" });
+    const result = await exchangeCode({ code: "x".repeat(43), verifier }, { consume: consumeJunk, open: t.open });
+    expect(result).toEqual({ ok: false, why: "unreadable-record" });
+  });
+
+  it("gives the session to only one of two simultaneous exchanges", async () => {
+    const t = createTestAuth();
+    const { code, verifier } = await signInForCode(t);
+    const results = await Promise.all([
+      exchangeCode({ code, verifier }, t.deps),
+      exchangeCode({ code, verifier }, t.deps),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+  });
+
+  it("does not hand over a link with a cookie when the code cannot be stored", async () => {
+    const challenge = challengeOf(newVerifier());
+    // The failure reaches the caller as an exception: no location (and so no cookie) comes back.
+    await expect(
+      replaceCookieWithCode(`${SCHEME}/?state=s&cookie=better-auth.session_token%3Dabc&cc=${challenge}`, {
+        seal: async (c) => c,
+        store: async () => {
+          throw new Error("database down");
+        },
+      }),
+    ).rejects.toThrow("database down");
   });
 
   it("does not keep the code in the database, only a hash of it", async () => {
@@ -200,7 +277,7 @@ describe("exchanging the code", () => {
     ["a code nobody issued", { code: randomBytes(32).toString("base64url"), verifier: newVerifier() }],
   ])("refuses %s", async (_label, input) => {
     const t = createTestAuth();
-    expect(await exchangeCode(input, { consume: t.consume })).toEqual({ ok: false });
+    expect(await exchangeCode(input, t.deps)).toMatchObject({ ok: false });
   });
 });
 
@@ -215,10 +292,10 @@ describe("helpers", () => {
 
   it("leaves a redirect to the web, or a link with no cookie (an error redirect), alone", async () => {
     const stored: string[] = [];
-    const store = async (id: string) => void stored.push(id);
-    expect(await replaceCookieWithCode("https://example.com/?cookie=x", store)).toBeNull();
-    expect(await replaceCookieWithCode(`${SCHEME}/?error=INVALID_TOKEN`, store)).toBeNull();
-    expect(await replaceCookieWithCode("not a url", store)).toBeNull();
+    const deps = { seal: async (c: string) => c, store: async (id: string) => void stored.push(id) };
+    expect(await replaceCookieWithCode("https://example.com/?cookie=x", deps)).toBeNull();
+    expect(await replaceCookieWithCode(`${SCHEME}/?error=INVALID_TOKEN`, deps)).toBeNull();
+    expect(await replaceCookieWithCode("not a url", deps)).toBeNull();
     expect(stored).toEqual([]);
   });
 });

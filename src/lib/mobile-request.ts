@@ -44,6 +44,33 @@ export async function authenticateBearer<S>(
   return { ok: true, session };
 }
 
+/**
+ * The body as text, or null when it is longer than `maxBytes`. It is read in pieces and counted in
+ * bytes, and the reading stops at the limit, so a body with no Content-Length (chunked) cannot make
+ * the server hold a huge string before the size is checked.
+ */
+export async function readLimitedText(
+  request: { body: ReadableStream<Uint8Array> | null },
+  maxBytes: number,
+): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 type Body = { ok: true; value: unknown } | { ok: false; response: MobileResponse };
 
 export async function readJsonBody(request: Request): Promise<Body> {
@@ -51,10 +78,8 @@ export async function readJsonBody(request: Request): Promise<Body> {
   if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY_BYTES) {
     return { ok: false, response: respond(413, { error: "too large" }) };
   }
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) {
-    return { ok: false, response: respond(413, { error: "too large" }) };
-  }
+  const text = await readLimitedText(request, MAX_BODY_BYTES);
+  if (text === null) return { ok: false, response: respond(413, { error: "too large" }) };
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch {
