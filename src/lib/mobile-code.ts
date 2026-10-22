@@ -103,6 +103,12 @@ export async function exchangeCode(
   }
 }
 
+// Whether this Set-Cookie text gives the browser a session (a non-empty session token). A cookie
+// that only deletes one (Max-Age=0, empty value) does not. expo() joins several Set-Cookie headers
+// into one text, so the name can come after a comma.
+const SESSION_COOKIE = /(?:^|[,\s])(?:__Secure-)?better-auth\.session_token=([^;,\s]+)/;
+export const setsSession = (setCookie: string): boolean => SESSION_COOKIE.test(setCookie);
+
 /**
  * Rewrites the redirect to the app's deep link: the "cookie" parameter that expo() added goes, a
  * "code" takes its place. Returns the new location, or null when there is nothing to do (a web
@@ -131,6 +137,11 @@ export async function replaceCookieWithCode(
 
   url.searchParams.delete("cookie");
   url.searchParams.delete("cc");
+
+  // No session was made (linking an account to a user who is already signed in, a refused or
+  // cancelled sign-in): the cookie only forgets the OAuth state, and there is nothing to hand over.
+  // The link goes on without it, with no code and no error: the app is not waiting for a session.
+  if (!setsSession(cookie)) return url.toString();
 
   // No (valid) challenge: the app is not one of ours, or an old one. No session is handed over.
   if (!isChallenge(challenge)) {
