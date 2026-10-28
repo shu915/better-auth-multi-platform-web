@@ -10,6 +10,9 @@ import {
   CODE_TTL_MS,
   challengeOf,
   exchangeCode,
+  exchangeState,
+  isState,
+  stateIdentifierOf,
   identifierOf,
   sessionRedirectPlugins,
   setsSession,
@@ -349,5 +352,131 @@ describe("withoutSessionCookies", () => {
   it("keeps a cookie that only deletes a session", () => {
     const deleting = "better-auth.session_token=; Max-Age=0; Path=/";
     expect(withoutSessionCookies([deleting])).toEqual([deleting]);
+  });
+});
+
+describe("exchanging by state (when the browser did not hand over the code)", () => {
+  const newState = () => randomBytes(16).toString("hex");
+
+  async function signIn(t: ReturnType<typeof createTestAuth>, state = newState()) {
+    const verifier = newVerifier();
+    const res = await t.openLink("a@example.com", `${SCHEME}/?state=${state}&cc=${challengeOf(verifier)}`);
+    const code = new URL(res.headers.get("location") ?? "").searchParams.get("code") ?? "";
+    return { state, verifier, code };
+  }
+
+  it("gives the same session to the app that holds the verifier, and works as a session", async () => {
+    const t = createTestAuth();
+    const { state, verifier } = await signIn(t);
+
+    const result = await exchangeState({ state, verifier }, t.deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const sessionCookie = /(?:__Secure-)?better-auth\.session_token=[^;,\s]+/.exec(result.cookie)?.[0] ?? "";
+    const session = await t.auth.api.getSession({ headers: new Headers({ cookie: sessionCookie }) });
+    expect(session?.user.email).toBe("a@example.com");
+  });
+
+  it("says 'not yet' before the sign-in is finished, and asking uses nothing up", async () => {
+    const t = createTestAuth();
+    const state = newState();
+    const verifier = newVerifier();
+    for (let i = 0; i < 3; i++) {
+      expect(await exchangeState({ state, verifier }, t.deps)).toEqual({ ok: false, pending: true });
+    }
+    // The sign-in finishes afterwards; the earlier asking took nothing.
+    const res = await t.openLink("a@example.com", `${SCHEME}/?state=${state}&cc=${challengeOf(verifier)}`);
+    expect(res.headers.get("location")).toContain("code=");
+    expect((await exchangeState({ state, verifier }, t.deps)).ok).toBe(true);
+  });
+
+  it("is used once, and then looks like 'not yet'", async () => {
+    const t = createTestAuth();
+    const { state, verifier } = await signIn(t);
+    expect((await exchangeState({ state, verifier }, t.deps)).ok).toBe(true);
+    expect(await exchangeState({ state, verifier }, t.deps)).toEqual({ ok: false, pending: true });
+  });
+
+  it("refuses a wrong verifier, and the record is used up by that try", async () => {
+    const t = createTestAuth();
+    const { state, verifier } = await signIn(t);
+    expect(await exchangeState({ state, verifier: newVerifier() }, t.deps)).toEqual({
+      ok: false,
+      pending: false,
+      why: "verifier-mismatch",
+    });
+    expect(await exchangeState({ state, verifier }, t.deps)).toEqual({ ok: false, pending: true });
+  });
+
+  it("refuses what is not a state or a verifier", async () => {
+    const t = createTestAuth();
+    const verifier = newVerifier();
+    for (const state of ["", "short", "has space 0123456789abcdef", undefined, 5, "x".repeat(129)]) {
+      expect(await exchangeState({ state, verifier }, t.deps)).toEqual({
+        ok: false,
+        pending: false,
+        why: "malformed",
+      });
+    }
+    expect(await exchangeState({ state: newState(), verifier: "short" }, t.deps)).toMatchObject({
+      ok: false,
+      why: "malformed",
+    });
+  });
+
+  it("keeps the code working, and the two do not need each other", async () => {
+    const t = createTestAuth();
+    const { state, verifier, code } = await signIn(t);
+    expect((await exchangeCode({ code, verifier }, t.deps)).ok).toBe(true);
+    expect((await exchangeState({ state, verifier }, t.deps)).ok).toBe(true);
+  });
+
+  it("expires with the code", async () => {
+    const t = createTestAuth();
+    const { internalAdapter } = await t.auth.$context;
+    const { state, verifier } = await signIn(t);
+    const record = await internalAdapter.findVerificationValue(stateIdentifierOf(state));
+    expect(record).not.toBeNull();
+    expect(record!.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(CODE_TTL_MS);
+    // A record made long ago is refused.
+    const old = newState();
+    await replaceCookieWithCode(
+      `${SCHEME}/?state=${old}&cookie=x%3Dy&cc=${challengeOf(verifier)}`,
+      {
+        seal: t.seal,
+        store: async (identifier, value, expiresAt) => {
+          await internalAdapter.createVerificationValue({ identifier, value, expiresAt });
+        },
+      },
+      new Date(Date.now() - 10 * 60_000),
+    );
+    expect(await exchangeState({ state: old, verifier }, t.deps)).toEqual({ ok: false, pending: true });
+  });
+
+  it("keeps only a hash of the state, and the session sealed", async () => {
+    const t = createTestAuth();
+    const { internalAdapter } = await t.auth.$context;
+    const { state } = await signIn(t);
+    const record = await internalAdapter.findVerificationValue(stateIdentifierOf(state));
+    expect(record!.value).not.toContain("session_token");
+    expect(stateIdentifierOf(state)).not.toContain(state);
+  });
+
+  it("stores nothing by state when the link has no usable state", async () => {
+    const stored: string[] = [];
+    const deps = { seal: async (c: string) => c, store: async (id: string) => void stored.push(id) };
+    const cc = challengeOf(newVerifier());
+    for (const query of ["", "state=short&", "state=&"]) {
+      stored.length = 0;
+      await replaceCookieWithCode(`${SCHEME}/?${query}cookie=better-auth.session_token%3Dabc&cc=${cc}`, deps);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).not.toContain("mobile-state:");
+    }
+  });
+
+  it("knows what a state looks like", () => {
+    expect(isState(newState())).toBe(true);
+    expect(isState("a1B2-c3D4_e5F6g7H8")).toBe(true);
+    expect(isState("short")).toBe(false);
   });
 });

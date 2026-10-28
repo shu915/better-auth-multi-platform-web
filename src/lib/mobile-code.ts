@@ -19,6 +19,16 @@ import { expo } from "@better-auth/expo";
 //   here:  after the link is verified, "?cookie=..." becomes "?code=..." (stored, bound to the
 //          challenge, valid for CODE_TTL_MS, usable once)
 //   app:   POST /api/mobile/exchange { code, verifier } -> { cookie }
+//
+// The code travels in the deep link, and the browser has to open the app for it to arrive. A
+// browser can refuse to (it asks, or it stops asking after a few tries on a desktop), and then the
+// app never sees the code. So the same record is also stored under the sign-in's `state` (the app
+// made it and keeps it): the app can ask for it by state, with the same verifier, while it waits:
+//   app:   POST /api/mobile/exchange-state { state, verifier } -> { cookie } or "not yet"
+// The state alone gets no session (the verifier is the proof, as for the code). It is seen in more
+// places than the code (the sign-in mail's address, the proxy's address), so someone who knows it
+// can only make the sign-in fail, not take the session. The two records are independent: both hold the same session, and both need the
+// verifier.
 
 export const CODE_TTL_MS = 60_000;
 export const CODE_PREFIX = "mobile-code:";
@@ -37,6 +47,17 @@ export const isChallenge = (value: unknown): value is string =>
 const VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
 export const isVerifier = (value: unknown): value is string =>
   typeof value === "string" && VERIFIER.test(value);
+
+export const STATE_PREFIX = "mobile-state:";
+
+// The app's own state: made by the app (hex or base64url), long enough to be unguessable.
+const STATE = /^[A-Za-z0-9_-]{16,128}$/;
+export const isState = (value: unknown): value is string =>
+  typeof value === "string" && STATE.test(value);
+
+/** What is stored under a state. Only a hash of the state is the key. */
+export const stateIdentifierOf = (state: string) =>
+  STATE_PREFIX + sha256(state).toString("base64url");
 
 /** What is stored under a code. Only a hash of the code is the key: the code is not in the database. */
 export const identifierOf = (code: string) => CODE_PREFIX + sha256(code).toString("base64url");
@@ -103,6 +124,43 @@ export async function exchangeCode(
   }
 }
 
+export type StateExchangeFailure = "malformed" | "unreadable-record" | "verifier-mismatch";
+export type StateExchangeResult =
+  | { ok: true; cookie: string }
+  // Nothing under this state (yet): the sign-in is not finished, or it was used or expired. Nothing
+  // is used up by asking, so the app can ask again.
+  | { ok: false; pending: true }
+  | { ok: false; pending: false; why: StateExchangeFailure };
+
+/**
+ * The same trade as exchangeCode, asked for by state. A state with nothing stored is "not yet" (the
+ * app asks every few seconds while the browser is open). Once a record is found it is used up by the
+ * first attempt whatever the verifier, like a code: a wrong verifier cannot be retried.
+ */
+export async function exchangeState(
+  input: { state: unknown; verifier: unknown },
+  deps: ExchangeDeps,
+): Promise<StateExchangeResult> {
+  const { state, verifier } = input;
+  if (!isState(state) || !isVerifier(verifier)) {
+    return { ok: false, pending: false, why: "malformed" };
+  }
+  const record = await deps.consume(stateIdentifierOf(state));
+  if (!record) return { ok: false, pending: true };
+  const stored = parseStored(record.value);
+  if (!stored) return { ok: false, pending: false, why: "unreadable-record" };
+  const expected = Buffer.from(stored.challenge);
+  const actual = Buffer.from(challengeOf(verifier));
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    return { ok: false, pending: false, why: "verifier-mismatch" };
+  }
+  try {
+    return { ok: true, cookie: await deps.open(stored.sealed) };
+  } catch {
+    return { ok: false, pending: false, why: "unreadable-record" };
+  }
+}
+
 // Whether this Set-Cookie text gives the browser a session (a non-empty session token). A cookie
 // that only deletes one (Max-Age=0, empty value) does not. expo() joins several Set-Cookie headers
 // into one text, so the name can come after a comma.
@@ -150,11 +208,12 @@ export async function replaceCookieWithCode(
   }
 
   const code = randomBytes(32).toString("base64url");
-  await deps.store(
-    identifierOf(code),
-    JSON.stringify({ sealed: await deps.seal(cookie), challenge } satisfies Stored),
-    new Date(now.getTime() + CODE_TTL_MS),
-  );
+  const record = JSON.stringify({ sealed: await deps.seal(cookie), challenge } satisfies Stored);
+  const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
+  await deps.store(identifierOf(code), record, expiresAt);
+  // The same record by the app's state, for an app whose browser did not open it (see the top).
+  const state = url.searchParams.get("state");
+  if (isState(state)) await deps.store(stateIdentifierOf(state), record, expiresAt);
   url.searchParams.set("code", code);
   return url.toString();
 }
