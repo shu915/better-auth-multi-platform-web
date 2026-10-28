@@ -51,9 +51,74 @@ export function isBearerOnly(request: Request): boolean {
   return hasBearer(request) && !request.headers.get("cookie");
 }
 
-// Runs before every Better Auth endpoint. Two jobs: refuse the server-only endpoints over HTTP,
-// and make linking need a recent sign-in, like unlinking already does. No session at all is left
-// to the endpoint's own check, which answers 401.
+// Where the native app's sign-in proxy may send the browser: Google's authorization endpoint, and
+// nowhere else. The proxy (/expo-authorization-proxy, from the expo plugin) checks only that the
+// address is https and not our own, so anyone could use our domain to redirect a user to any site.
+// Rules (the client_id and redirect_uri are checked below, with the size limits):
+//  - the parsed origin is Google's, so "https://accounts.google.com@evil.example" is judged by the
+//    host the browser would really go to;
+//  - the path is the authorization endpoint, not anything else on accounts.google.com (such as
+//    /logout?continue=...);
+//  - the text is already in its parsed form (`href`). The plugin puts the text we were given into
+//    the Location header, not the parsed one, and a parser that reads "\" or a tab differently from
+//    the browser would send the user elsewhere. A backslash, tab, line break or upper-case host
+//    changes `href`, so it is refused.
+const GOOGLE_AUTHORIZATION_ORIGIN = "https://accounts.google.com";
+const GOOGLE_AUTHORIZATION_PATH = "/o/oauth2/v2/auth";
+
+// Google's page can be asked for with anyone's client_id and redirect_uri. Without these two, a link
+// on our domain could lead to the consent screen of an attacker's app. Both must be ours: the
+// address Better Auth itself builds (`/sign-in/social`) is the only one that passes.
+export type ExpectedGoogleRequest = { clientId: string; redirectUri: string };
+
+// A real Google address is a few hundred characters; this only stops absurd input.
+const MAX_AUTHORIZATION_URL_LENGTH = 2048;
+
+export function isGoogleAuthorizationUrl(
+  value: unknown,
+  expected: ExpectedGoogleRequest,
+): boolean {
+  if (typeof value !== "string" || value.includes("#")) return false;
+  if (value.length > MAX_AUTHORIZATION_URL_LENGTH) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.origin === GOOGLE_AUTHORIZATION_ORIGIN &&
+      url.pathname === GOOGLE_AUTHORIZATION_PATH &&
+      url.href === value &&
+      url.searchParams.getAll("client_id").join() === expected.clientId &&
+      url.searchParams.getAll("redirect_uri").join() === expected.redirectUri
+    );
+  } catch {
+    return false;
+  }
+}
+
+// `oauthState` is a value the native app read back from its own storage (a cookie's value) and
+// the plugin writes into a cookie. Its format is Better Auth's, so only the size is limited, and
+// whatever could break a cookie out of its value (a separator, a quote, white space, a control
+// character) is refused.
+const MAX_OAUTH_STATE_LENGTH = 512;
+
+export function isSafeOauthState(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (
+    typeof value !== "string" ||
+    value === "" ||
+    value.length > MAX_OAUTH_STATE_LENGTH
+  ) {
+    return false;
+  }
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x20 || code === 0x7f || ';,"\\'.includes(char)) return false;
+  }
+  return true;
+}
+
+// Runs before every Better Auth endpoint. Three jobs: refuse the server-only endpoints over HTTP,
+// keep the native sign-in proxy on Google, and make linking need a recent sign-in, like unlinking
+// already does. No session at all is left to the endpoint's own check, which answers 401.
 const guardAccountEndpoints = createAuthMiddleware(async (ctx) => {
   if (SERVER_ONLY_PATHS.has(ctx.path) && ctx.request !== undefined) {
     // The one exception: /token for a bearer-only request (a native app). Everything else on the
@@ -73,6 +138,31 @@ const guardAccountEndpoints = createAuthMiddleware(async (ctx) => {
       message: "A bearer token is only accepted at /token",
       code: "BEARER_ONLY_FOR_TOKEN",
     });
+  }
+  if (ctx.path === "/expo-authorization-proxy") {
+    // Our own Google app's id (from the options googleAuthOptions sets). With Google off there is
+    // nothing to send anyone to, so the proxy is closed.
+    const provider = ctx.context.options.socialProviders?.google;
+    // (Better Auth also accepts a function here; googleAuthOptions below always sets an object.)
+    const clientId = typeof provider === "object" ? provider.clientId : undefined;
+    const ours =
+      typeof clientId === "string" && clientId !== ""
+        ? {
+            clientId,
+            // The address Better Auth gives Google as the callback (see its google provider).
+            redirectUri: `${ctx.context.baseURL}/callback/google`,
+          }
+        : null;
+    if (
+      ours === null ||
+      !isGoogleAuthorizationUrl(ctx.query?.authorizationURL, ours) ||
+      !isSafeOauthState(ctx.query?.oauthState)
+    ) {
+      throw APIError.from("BAD_REQUEST", {
+        message: "Invalid authorizationURL",
+        code: "INVALID_AUTHORIZATION_URL",
+      });
+    }
   }
   if (ctx.path !== "/link-social") return;
   const session = await getSessionFromCtx(ctx);
