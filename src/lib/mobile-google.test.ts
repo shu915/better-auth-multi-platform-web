@@ -54,7 +54,7 @@ function createTestAuth() {
   const auth = betterAuth({
     baseURL: BASE,
     secret: "test-secret-test-secret-test-secret-123456",
-    trustedOrigins: [SCHEME],
+    trustedOrigins: [SCHEME, "http://127.0.0.1:*"],
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [] }),
     plugins: [
       magicLink({
@@ -169,6 +169,38 @@ describe("signing in with Google from the native app", () => {
     expect(session?.user.email).toBe("a@example.com");
   });
 
+  it("hands over a code to the desktop app's loopback receiver, and the browser keeps no session", async () => {
+    const t = createTestAuth();
+    await userWithGoogle(t);
+    const verifier = newVerifier();
+    const callback = `http://127.0.0.1:51234/cb?state=abcdef0123456789abcdef0123456789&cc=${challengeOf(verifier)}`;
+
+    const { location, setCookie } = await t.viaGoogle({ sub: "g-1", email: "a@example.com" }, callback);
+
+    expect(`${location.origin}${location.pathname}`).toBe("http://127.0.0.1:51234/cb");
+    expect(location.searchParams.has("cookie")).toBe(false);
+    expect(setCookie.filter((cookie) => /session_token=[^;]+/.test(cookie))).toEqual([]);
+    const code = location.searchParams.get("code") ?? "";
+    expect(code).not.toBe("");
+    const exchanged = await exchangeCode({ code, verifier }, t.deps);
+    expect(exchanged.ok).toBe(true);
+  });
+
+  it("links Google through the loopback receiver without a session or a code", async () => {
+    const t = createTestAuth();
+    const cookie = await t.signIn("a@example.com");
+    const { location, setCookie } = await t.viaGoogle(
+      { sub: "g-1", email: "a@example.com" },
+      "http://127.0.0.1:51234/cb?link=0123456789abcdef0123456789abcdef",
+      cookie,
+    );
+    expect(await t.providers(cookie)).toContain("google");
+    expect(location.searchParams.get("link")).toBe("0123456789abcdef0123456789abcdef");
+    expect(location.searchParams.has("cookie")).toBe(false);
+    expect(location.searchParams.has("code")).toBe(false);
+    expect(setCookie.filter((c) => /session_token=[^;]+/.test(c))).toEqual([]);
+  });
+
   it("hands over nothing to a link with no challenge", async () => {
     const t = createTestAuth();
     await userWithGoogle(t);
@@ -231,6 +263,15 @@ describe("login CSRF through the sign-in proxy", () => {
     expect(planted.status).toBe(400);
     expect(sessionCookiesOf(callback.headers.getSetCookie())).toEqual([]);
     expect(callback.headers.get("location")).toContain("error=state_mismatch");
+  });
+
+  it("signs the victim's browser in for neither, when the sign-in returns to the loopback receiver", async () => {
+    const { planted, callback } = await attack(
+      `http://127.0.0.1:51234/cb?state=abcdef0123456789abcdef0123456789&cc=${challengeOf(newVerifier())}`,
+    );
+    expect(planted.status).toBe(302);
+    expect(callback.headers.get("location")).toContain("code=");
+    expect(sessionCookiesOf(callback.headers.getSetCookie())).toEqual([]);
   });
 
   it("signs the victim's browser in for neither, when the sign-in returns to the app", async () => {

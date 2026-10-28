@@ -168,6 +168,23 @@ const SESSION_COOKIE = /(?:^|[,\s])(?:__Secure-)?better-auth\.session_token=([^;
 export const setsSession = (setCookie: string): boolean => SESSION_COOKIE.test(setCookie);
 
 /**
+ * A redirect to the desktop app's own local receiver (RFC 8252, "loopback"): `http://127.0.0.1:<port>/…`.
+ * The address is the literal 127.0.0.1 (not "localhost", which a resolver could point elsewhere), a
+ * plain http URL with a port, and nothing else (no user name, no password). The port is the app's own
+ * choice for each sign-in. Such a redirect is to the app on this machine like a deep link is, so the
+ * session goes by the code and not in the browser. Anything else on http(s) is a web page.
+ */
+export function isLoopbackUrl(url: URL): boolean {
+  return (
+    url.protocol === "http:" &&
+    url.hostname === "127.0.0.1" &&
+    /^[0-9]{1,5}$/.test(url.port) &&
+    url.username === "" &&
+    url.password === ""
+  );
+}
+
+/**
  * Rewrites the redirect to the app's deep link: the "cookie" parameter that expo() added goes, a
  * "code" takes its place. Returns the new location, or null when there is nothing to do (a web
  * redirect, or a link with no cookie such as an error redirect).
@@ -188,7 +205,7 @@ export async function replaceCookieWithCode(
   } catch {
     return null;
   }
-  if (url.protocol === "http:" || url.protocol === "https:") return null;
+  if ((url.protocol === "http:" || url.protocol === "https:") && !isLoopbackUrl(url)) return null;
   const cookie = url.searchParams.get("cookie");
   if (cookie === null) return null;
   const challenge = url.searchParams.get("cc");
@@ -240,6 +257,22 @@ const redirectsWithSession = (path: string | undefined) =>
   !!path &&
   (path.startsWith("/callback") || path.startsWith("/magic-link/verify") || path.startsWith("/verify-email"));
 
+/**
+ * For a redirect to the loopback receiver: the same "?cookie=<Set-Cookie>" that expo() puts on a deep
+ * link, so that replaceCookieWithCode can turn it into a code. Other locations are returned as they are.
+ */
+export function withCookieForLoopback(location: string, setCookie: string | null): string {
+  let url: URL;
+  try {
+    url = new URL(location);
+  } catch {
+    return location;
+  }
+  if (!isLoopbackUrl(url) || setCookie === null) return location;
+  url.searchParams.set("cookie", setCookie);
+  return url.toString();
+}
+
 /** Must come AFTER expo() in the plugin list: it reads the redirect that expo() has changed. */
 export function mobileCodeExchange(): BetterAuthPlugin {
   return {
@@ -251,7 +284,10 @@ export function mobileCodeExchange(): BetterAuthPlugin {
           handler: createAuthMiddleware(async (ctx) => {
             const location = ctx.context.responseHeaders?.get("location");
             if (!location) return;
-            const next = await replaceCookieWithCode(location, {
+            // expo() adds the session as "?cookie=" only for a deep link, never for http. A redirect
+            // to the app's loopback receiver is handled the same way, so the cookie is added here.
+            const toReplace = withCookieForLoopback(location, ctx.context.responseHeaders?.get("set-cookie") ?? null);
+            const next = await replaceCookieWithCode(toReplace, {
               seal: (cookie) => symmetricEncrypt({ key: ctx.context.secretConfig, data: cookie }),
               store: async (identifier, value, expiresAt) => {
                 await ctx.context.internalAdapter.createVerificationValue({ identifier, value, expiresAt });

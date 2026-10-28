@@ -11,12 +11,14 @@ import {
   challengeOf,
   exchangeCode,
   exchangeState,
+  isLoopbackUrl,
   isState,
   stateIdentifierOf,
   identifierOf,
   sessionRedirectPlugins,
   setsSession,
   replaceCookieWithCode,
+  withCookieForLoopback,
   withoutSessionCookies,
 } from "@/lib/mobile-code";
 
@@ -30,7 +32,7 @@ function createTestAuth({ withPlugin = true }: { withPlugin?: boolean } = {}) {
   const auth = betterAuth({
     baseURL: BASE,
     secret: "test-secret-test-secret-test-secret-123456",
-    trustedOrigins: [SCHEME],
+    trustedOrigins: [SCHEME, "http://127.0.0.1:*"],
     database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [] }),
     plugins: [
       magicLink({
@@ -478,5 +480,102 @@ describe("exchanging by state (when the browser did not hand over the code)", ()
     expect(isState(newState())).toBe(true);
     expect(isState("a1B2-c3D4_e5F6g7H8")).toBe(true);
     expect(isState("short")).toBe(false);
+  });
+});
+
+describe("the desktop app's loopback receiver", () => {
+  const LOOPBACK = "http://127.0.0.1:51234/cb";
+  const newState = () => randomBytes(16).toString("hex");
+
+  it("knows exactly which address is the app's own receiver", () => {
+    for (const ok of ["http://127.0.0.1:51234/cb", "http://127.0.0.1:1/", "http://127.0.0.1:65535/cb?x=1"]) {
+      expect(isLoopbackUrl(new URL(ok)), ok).toBe(true);
+    }
+    for (const bad of [
+      "http://127.0.0.1/cb",
+      "https://127.0.0.1:51234/cb",
+      "http://localhost:51234/cb",
+      "http://127.0.0.2:51234/cb",
+      "http://127.0.0.1.evil.example:51234/cb",
+      "http://evil.example:51234/cb",
+      "http://user@127.0.0.1:51234/cb",
+      "http://user:pass@127.0.0.1:51234/cb",
+      "http://[::1]:51234/cb",
+      "betterauthmulti:///",
+    ]) {
+      expect(isLoopbackUrl(new URL(bad)), bad).toBe(false);
+    }
+  });
+
+  it("puts the cookie on a loopback redirect only, so the code can replace it", () => {
+    const cookie = "better-auth.session_token=abc.sig; Path=/";
+    const url = new URL(withCookieForLoopback(`${LOOPBACK}?state=s`, cookie));
+    expect(url.searchParams.get("cookie")).toBe(cookie);
+    expect(withCookieForLoopback("https://example.com/?state=s", cookie)).toBe("https://example.com/?state=s");
+    expect(withCookieForLoopback("http://localhost:51234/cb", cookie)).toBe("http://localhost:51234/cb");
+    expect(withCookieForLoopback(`${LOOPBACK}?state=s`, null)).toBe(`${LOOPBACK}?state=s`);
+    expect(withCookieForLoopback("not a url", cookie)).toBe("not a url");
+  });
+
+  it("keeps the session cookie SameSite=Lax: the trust in 127.0.0.1 relies on it", async () => {
+    // The loopback address is trusted for Origin checks (auth.ts). A page on the user's own machine
+    // could then send requests as a trusted origin; the session cookie is what keeps it from acting
+    // as the user, because a browser does not send a Lax cookie on a request from another site.
+    // Should that setting ever change, this fails and the trust has to be thought over again.
+    const t = createTestAuth();
+    const res = await t.openLink("a@example.com", "/");
+    const sessionCookie = res.headers.getSetCookie().find((c) => /session_token=[^;]+/.test(c)) ?? "";
+    expect(sessionCookie).toMatch(/SameSite=Lax/i);
+    expect(sessionCookie).toMatch(/HttpOnly/i);
+    expect(sessionCookie).not.toMatch(/SameSite=None/i);
+  });
+
+  it("hands the browser a code, not the session, and the app trades it", async () => {
+    const t = createTestAuth();
+    const state = newState();
+    const verifier = newVerifier();
+    const res = await t.openLink("a@example.com", `${LOOPBACK}?state=${state}&cc=${challengeOf(verifier)}`);
+
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(`${location.origin}${location.pathname}`).toBe(LOOPBACK);
+    expect(location.searchParams.get("state")).toBe(state);
+    expect(location.searchParams.has("cookie")).toBe(false);
+    const code = location.searchParams.get("code") ?? "";
+    expect(code).not.toBe("");
+    // The browser keeps no session.
+    expect(res.headers.getSetCookie().filter((c) => /session_token=[^;]+/.test(c))).toEqual([]);
+
+    const exchanged = await exchangeCode({ code, verifier }, t.deps);
+    expect(exchanged.ok).toBe(true);
+    // And the state works the same way (the app's fallback).
+    expect((await exchangeState({ state, verifier }, t.deps)).ok).toBe(true);
+  });
+
+  it("hands over no session to a loopback redirect without a challenge", async () => {
+    const t = createTestAuth();
+    const res = await t.openLink("a@example.com", `${LOOPBACK}?state=${newState()}`);
+    const location = new URL(res.headers.get("location") ?? "");
+    expect(location.searchParams.get("error")).toBe("missing_challenge");
+    expect(location.searchParams.has("code")).toBe(false);
+    expect(res.headers.getSetCookie().filter((c) => /session_token=[^;]+/.test(c))).toEqual([]);
+  });
+
+  it("does not take any other http address as the app's own: the redirect is left alone", async () => {
+    // (Better Auth's own check of a trusted callbackURL does not run in tests; what matters here is
+    // that our code never turns such a redirect into a code, as it is a web page.)
+    const stored: string[] = [];
+    const deps = { seal: async (c: string) => c, store: async (id: string) => void stored.push(id) };
+    const cc = challengeOf(newVerifier());
+    for (const target of [
+      "http://localhost:51234/cb",
+      "http://127.0.0.1.evil.example:51234/cb",
+      "https://127.0.0.1:51234/cb",
+      "http://127.0.0.1/cb",
+      "http://user@127.0.0.1:51234/cb",
+    ]) {
+      const location = `${target}?state=${newState()}&cc=${cc}&cookie=better-auth.session_token%3Dabc`;
+      expect(await replaceCookieWithCode(location, deps), target).toBeNull();
+    }
+    expect(stored).toEqual([]);
   });
 });
