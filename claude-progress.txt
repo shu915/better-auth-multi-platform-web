@@ -3,58 +3,44 @@ claude-progress.txt (web)
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
 機能の設計の詳細は docs/design.md、デプロイと公開前チェックは docs/deploy.md。ここには状況だけを書く。
 
-## 完了したタスク
-- ログインとプロフィール: マジックリンク、/profile(閲覧)、/profile/edit(Server Action で name と bio を保存)
-- Google ログイン(任意。紐づけ・解除、新規登録不可)と、セッション盗難の対策(5 分ルール、通知メール)
-- 退会(Go の DELETE /me → deleteUser、通知メール)、サーバーだけが呼べるエンドポイント(HTTP は 403 SERVER_ONLY)
-- 期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC)
-- 本番向けの守り: DB 接続、レート制限(DB に数える)、CSP(強制)、本番で拒否する設定
-- テスト: Vitest(約 190 件)、E2E(Playwright 1 本)、CI(check と e2e の 2 ジョブ)、evaluator と hooks
-- 本番デプロイ(2026-10-09): Vercel + Neon と Render(いずれもシンガポール)。ログイン、プロフィール、退会、Google 紐づけ、レート制限、HSTS、CSP、Cron の手動実行を人が確認済み
-- README を書いた
-- CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
-- guard-pre.sh の any 検出を直した(2026-10-19): 正規表現の括弧が閉じておらず、`: any =` や `(x: any)` が通っていた。`any[]` と `Map<string, any>` も止める
+## 状況: 完了
+Web、Go API、モバイル(Expo)、デスクトップ(Tauri)の 4 つで、ひとつのログインを共有する構成が、本番(Vercel + Neon と Render)で動いている。実行中のタスクはない。
 
-- Expo(mobile)対応(PR #22、main に入った): auth.ts に expo() と bearer()、trustedOrigins に betterauthmulti://、/token は Bearer だけ(Cookie なし)のとき HTTP でも通す。スパイクで、iOS シミュレータと Android エミュレータの両方で、ディープリンク → JWT → Go の GET /me まで確認済み。実機は未確認。モバイルの本実装は mobile リポジトリの feature/auth-flow
-- JWT に auth_time(セッションの作成時刻)を載せた(2026-10-19、ブランチ fix/token-auth-time)。盗まれたセッションの Cookie を Bearer として送り直して JWT を取り、退会の「5 分以内のログイン」と通知を通らずに Go の DELETE /me を呼べる穴を、Go 側の鮮度の確認(ブランチ feature/require-fresh-auth-for-delete)と合わせて塞ぐ。デプロイは Web が先、Go が後
+## できること(すべて main)
+- ログインはマジックリンク(パスワードなし)。/profile で閲覧、/profile/edit で name と bio を保存(bio は Go)
+- Google は任意(紐づけ・解除、紐づけ済みのユーザーのログイン。新規登録は不可)。紐づけ・解除・退会は「5 分以内のログイン」を要求し、紐づけると元のメールに通知
+- 退会(他のセッションの失効 → Go のデータ → ユーザー → 通知メール)。サーバーだけが呼べる口は HTTP では 403 SERVER_ONLY(/token だけ、Bearer のみのとき例外)
+- ネイティブ向けの口(`/api/mobile/*`。デスクトップも使う): /token(JWT)、/exchange(1 回限りのコード + PKCE)、/exchange-state(同じ引き換えを state で。予備)、/profile(name)、/account(退会)
+- ブラウザにセッションを置かない戻り: ディープリンクもループバック(`http://127.0.0.1:<port>`、デスクトップの Google)も、コードで渡す
+- Google の入口 `/api/auth/expo-authorization-proxy` は、自分の Google アプリの認可 URL だけ通す。ログイン CSRF の防御あり
+- 本番向けの守り: DB 接続、レート制限(DB に数える)、CSP(強制)、期限切れの行の掃除(Vercel Cron、毎日 18:00 UTC)
+- テスト: Vitest、E2E(Playwright 1 本)、CI(check と e2e)、evaluator と hooks
+- 本番デプロイ: Vercel + Neon と Render(シンガポール)。モバイルとデスクトップの実機からも、本番に繋いで確認済み
 
-- JWT の auth_time は、Web の PR #23 と Go の PR #17 で、main に入った(Web が先、Go が後)
-- ネイティブ用の口(PR #24、#25、main に入った。認証は /token と同じ=署名付きの Bearer があり、Cookie ヘッダーがない。共通部分は src/lib/mobile-request.ts): `PATCH /api/mobile/profile`(名前の更新。/update-user は HTTP では SERVER_ONLY のまま)、`DELETE /api/mobile/account`(退会。画面と同じ deleteAccount()=メールの一致、270 秒の新しさ、他のセッションの失効、Go のデータ、ユーザー、通知メール)。退会は成功時に `[mobile-account] account deleted user=<id>` をログに出す。モバイル(iOS と Android)から、名前の更新と退会まで確認済み。`/api/mobile/*` は Better Auth の外にあるので、鮮度が要る操作を足すときは session.createdAt を自分で確認する(docs/design.md)
-
-- ネイティブの Google の入口 `/api/auth/expo-authorization-proxy` を、自分の Google アプリに限った(ブランチ fix/expo-proxy-open-redirect、`guardAccountEndpoints`)。プラグイン本体は https で自ドメイン以外なら何でも通していた(open redirect)。飛び先は Google の認可 URL で、`client_id` と `redirect_uri` が自分のものだけ。URL と `oauthState` の長さ制限あり。Google が無効なら閉じる。テストは src/lib/expo-proxy.test.ts、理由は docs/design.md
-
-- ログイン CSRF(ブランチ fix/oauth-login-csrf): プロキシは、ネイティブのディープリンクの `state` だけ通す。ディープリンクへ戻す応答は、ブラウザにセッションの Cookie を置かない。詳細は docs/design.md
-
-- ブラウザが「アプリを開く」を出さないとログインできない問題への対策(ブランチ feat/exchange-by-state): 同じ記録を `state` のハッシュでも保存し、`POST /api/mobile/exchange-state`(`{state, verifier}`)で、コードなしで引き換えられる。待っている間、アプリが数秒おきに聞く(デスクトップが先に使う)。詳細は docs/design.md
-
-- デスクトップの戻り先にループバック(`http://127.0.0.1:<port>`、RFC 8252)を使えるようにした(ブランチ feat/loopback-callback): ディープリンクのポップアップに頼らないため。`trustedOrigins` に `http://127.0.0.1:*`、`isLoopbackUrl` と `withCookieForLoopback`(mobile-code.ts)。ディープリンクと同じく、ブラウザにはセッションを置かず、コードで渡す。詳細は docs/design.md
-
-## 実行中のタスク
-- feature/mobile-code-exchange(レビューの S3): マジックリンクで戻るディープリンクに、セッションを載せない。`expo()` は、リンクに `?cookie=<署名付きセッション>` を付ける(独自スキームは他のアプリも登録できるので盗まれる)。`mobileCodeExchange()`(src/lib/mobile-code.ts。`sessionRedirectPlugins()` で `expo()` の直後に置く)が、それを取り除いて、60 秒で失効する 1 回限りの `?code=` に置き換える。アプリは `POST /api/mobile/exchange`(`{code, verifier}`。src/lib/mobile-exchange.ts)で、PKCE(RFC 7636)の verifier を添えて、セッションに引き換える。`cc`(challenge)のないリンクにはセッションを渡さない(`?error=missing_challenge`)。コードは 1 回で使い切り、保存するのはコードのハッシュと、暗号化した Cookie と、challenge。拒否の理由は応答に出さず、ログにだけ出す(`[mobile-exchange] refused: …`)。本文は 2KB まで(バイト数で数える。`readLimitedText`)
-  - 状態: 1 コミット済み(1b49b84)+ レビューの反映(暗号化して保存、本文の上限、足りなかったテスト)が未コミット。vitest 251 件、tsc、lint、build は通る。evaluator は合格(その後のレビューの指摘も反映)。iOS で、ログインの成功(`exchange 200`)と、同じリンクの再利用が失敗することを確認済み。Android も、JS を再読み込みしたあと、ログインできた。暗号化のあとの、もう一度のログインは、端末で未確認
-  - **デプロイの順序**: 古いモバイルは `cc` を送らないので、この Web ではログインできなくなる。モバイル(mobile リポジトリの feature/s3-code-exchange)と同時に出す(開発中は問題ない)
-  - 残る限界: 攻撃者が自分の `cc` を付けたログインメールを被害者に送らせ、被害者がそのリンクを開き、被害者の端末に攻撃者のアプリがある場合は、コードを取られる。Universal Links / App Links が要る(ドメインとストアの設定が決まってから)。別のアプリが、コードを横取りして、でたらめな verifier で先に引き換えると、本物のアプリのログインは失敗する(セッションは盗まれない)
+## 運用メモ
+- **Render の DB は 2026-11-08 に期限が切れる**(そのままにする方針)
+- デプロイの順: 初回は Go が先、Web が後(Web の退会が Go を呼ぶ)。Go が新しいことを要求し始める変更(例: JWT の auth_time)は、Web が先
+- `/api/mobile/*` は Better Auth の外にある。鮮度が要る操作を足すときは、session.createdAt を自分で確認する(docs/design.md)
 
 ## 未確認
-- (確認済み 2026-10-28)ネイティブの Google の入口のログイン CSRF は、実験で成立を確認し、ブランチ fix/oauth-login-csrf で塞いだ。マージ前は未対応
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
 - Render DB の verify-full(api の DATABASE_URL)
-- Google の解除の本番での通し
 - セッション盗難対策(紐づけ・解除の 5 分ルールと通知)は、別の目でのレビューをまだ受けていない
 
 ## 既知の限界(許容している)
-- ネイティブ(Expo)のマジックリンクは、独自スキームのディープリンクに、1 回限りのコードを載せて戻す(S3。上の実行中を参照)。独自スキーム自体の限界は残る(Universal Links / App Links が要る)
-- Go API にレート制限がない。`/api/mobile/exchange` にもレート制限がない(コードが 256 ビットで当たらないため)。JWT は退会後も最大 5 分有効だが、Go が退会後 10 分は PUT /me/profile を 410 で断る(Go の PR #18。本番の DB にマイグレーション 00002 を当ててから、Go を出す)
+- 独自スキームとループバックの限界: 攻撃者が自分の `cc` を付けたログインメールを被害者に送らせ、被害者の端末で攻撃者のプロセスやアプリが受けると、コードを取られる。Universal Links / App Links が要る。別のアプリが、でたらめな verifier で先に引き換えると、本物のログインは失敗する(セッションは盗まれない)
+- `http://127.0.0.1:*` を trustedOrigins に足したので、利用者の Mac のページが信頼された Origin で呼べる。Cookie は SameSite=Lax なので操作はできない(テストで守っている)
+- Go API にレート制限がない。/api/mobile/exchange にもない(コードが 256 ビットで当たらないため)。exchange-state は、クライアントごとに 1 分 60 回
 - 宛先ごとの制限は、他人のログインを妨害するのに使える(+ のエイリアスは別に数える)
 - CSP の退行(静的なページを足すと nonce が付かず止まる)を自動では検知できない
 - Cron の DELETE に件数の上限がなく、CRON_SECRET の最小長も強制していない
 - 見送ったレビュー指摘: encryptOAuthTokens と storeToken: "hashed"、メール HTML の URL のエスケープ
 - Vercel のプレビューのビルドは失敗する(環境変数が Production だけ。使わない方針)
-- 無料プランの Render はスリープする。スリープ明けの初回は 5 秒で切れて bio が出ないことがある
+- Render の無料プランはスリープする。スリープ明けの初回は 5 秒で切れて bio が出ないことがある
 
-## これからのタスク(順番)
-1. single-db モードを先に作る(Tauri / Expo より前)
-2. verify-full で Render DB に繋がるか試す
-3. S3(上の実行中)の PR。モバイルと同時に出す
-4. モバイルの Google 連携(ログイン済みのユーザーが後から足す。link / unlink は Web の仕様に合わせる。Google のコールバックも、コード交換を通る)
-5. Tauri(デスクトップ)を足すか決める(Better Auth でログインして JWT を取り、Go を直接呼ぶ。Go は変えない)
+## やるなら
+- `/api/mobile/*` を、ネイティブ全体の名前(例: `/api/native/*`)に変える(Web、モバイル、デスクトップを同時に)
+- `@better-auth/expo` の新しい版(1.7.14)で、プロキシの扱いが直っているか、変更履歴で見る。直っていれば、上げる(モバイル、デスクトップと同時に)
+- exchange-state(予備。いまは使わない)を外すか決める
+- single-db モード(ブランチ single-db。未マージ)
+- verify-full で Render DB に繋がるか試す

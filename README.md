@@ -2,36 +2,74 @@
 
 ひとつのログインを、複数のクライアントで共有するためのサンプルです。Web アプリが
 [Better Auth](https://www.better-auth.com) でログインを担当し、別サービスの Go API が、その
-トークンを信頼して使います。将来は、デスクトップ(Tauri)とモバイル(Expo)からも、Go を変えずに
-同じ API を使えるようにする予定です(今は Web のみ)。
+トークンを信頼して使います。クライアントは、Web(ブラウザ)、モバイル(Expo)、デスクトップ
+(Tauri)の 3 つで、**Go は変えずに**、同じ API を使います。
 
-このリポジトリは Web 側(Next.js)です。Go API は
-[better-auth-multi-platform-api](https://github.com/shu915/better-auth-multi-platform-api) にあります。
+このリポジトリは Web 側(Next.js)で、ログインの発行元です。
+
+## 4 つのリポジトリ
+
+| リポジトリ | 役割 |
+|---|---|
+| **better-auth-multi-platform-web**(これ) | Next.js。Better Auth でログインを担当し、JWT を発行する。ブラウザの UI。 |
+| [better-auth-multi-platform-api](https://github.com/shu915/better-auth-multi-platform-api) | Go の API。JWT を検証して、プロフィール(bio)を読み書きする。 |
+| [better-auth-multi-platform-mobile](https://github.com/shu915/better-auth-multi-platform-mobile) | Expo(iOS と Android)のクライアント。 |
+| [better-auth-multi-platform-desktop](https://github.com/shu915/better-auth-multi-platform-desktop) | Tauri(macOS)のクライアント。 |
 
 ## 全体像
 
 ```
-ブラウザ ──▶ Next.js (Vercel) ──▶ Go API (Render)
-               │  Better Auth        │  公開鍵で JWT の署名を検証
-               ▼                     ▼
-           Postgres (Neon)      Postgres (Render)
-         ユーザー、セッション、    プロフィール(bio)
-         署名鍵
+ブラウザ ──▶ Next.js (Vercel) ──▶ ┐  JWT を付けて呼ぶ
+                │ JWT を発行      ├─▶ Go API (Render)
+モバイル / デスクトップ ──────────▶ ┘     │  公開鍵で JWT の署名を検証
+                │                         ▼
+                ▼                   Postgres (Render)
+          Postgres (Neon)           プロフィール(bio)
+          ユーザー、セッション、
+          署名鍵
 ```
+
+ブラウザは、Next.js のサーバー経由で Go を呼びます。モバイルとデスクトップは、ここでログインして
+JWT をもらい、Go を直接呼びます。
 
 - **ログインはマジックリンク。** パスワードは使いません。最初のマジックリンクでユーザーが作られ、
   そのユーザー ID が、すべてのトークンの `sub` になります。
-- **Google は任意で、ユーザーは作れません。** ログイン済みのユーザーが、`/profile` から Google を
+- **Google は任意で、ユーザーは作れません。** ログイン済みのユーザーが、プロフィール画面から Google を
   紐づけ・解除できます。紐づけには、直近 5 分以内のログインが必要で、紐づけたら、元のメール
-  アドレスに通知が届きます。
-- **ブラウザは JWT を持ちません。** Next.js のサーバーが、Go API を呼ぶたびに、短命(5 分)の
-  トークンを発行して付けます(`src/lib/api-server.ts`)。Go は、`/api/auth/jwks` の公開鍵で署名を、
-  あわせて issuer と audience を検証します。
-- **退会**(`/profile`): 他のセッションを失効し、Go 側のデータを消し、ユーザーを削除して、元の
-  メールアドレスに通知します。確認用のメールアドレスの入力と、直近のログインを求めます。
+  アドレスに通知が届きます。紐づけたあとは、Google でもログインできます。
+- **Go を呼ぶのは、JWT。** ブラウザは JWT を持たず、Next.js のサーバーが、Go を呼ぶたびに短命(5 分)の
+  トークンを発行して付けます(`src/lib/api-server.ts`)。ネイティブ(モバイル、デスクトップ)は、
+  セッションを `Authorization: Bearer` で送って JWT を受け取り(`/api/auth/token`)、Go を直接呼びます。
+  Go は、`/api/auth/jwks` の公開鍵で署名を、あわせて issuer と audience を検証します。
+- **退会**: 他のセッションを失効し、Go 側のデータを消し、ユーザーを削除して、元のメールアドレスに
+  通知します。確認用のメールアドレスの入力と、直近のログインを求めます。
 - **サーバーだけが呼べるエンドポイント**(`/api/auth/delete-user`、`/update-user`、`/token`、
   Google のトークン系)は、HTTP 経由では `403` を返します。Cookie だけで、Server Action にある
-  ルール(確認入力、Go のデータ削除、通知など)を飛ばせないようにするためです。
+  ルール(確認入力、Go のデータ削除、通知など)を飛ばせないようにするためです。例外は `/token` で、
+  署名つきの Bearer があり、Cookie がないリクエストだけ通します(ネイティブ用)。
+
+## ネイティブアプリ(モバイル、デスクトップ)向けの仕組み
+
+ブラウザの Cookie は使えないので、ネイティブには専用の口があります。名前は `/api/mobile/*` ですが、
+デスクトップも使います。
+
+| 口 | 内容 |
+|---|---|
+| `GET /api/auth/token` | セッションを Bearer で送り、Go 用の JWT(5 分)をもらう。 |
+| `POST /api/mobile/exchange` | ログインのリンクに載った**1 回限りのコード**と PKCE の verifier を、セッションに引き換える。 |
+| `POST /api/mobile/exchange-state` | 同じ引き換えを `state` で行う。戻りのリンクが届かなかったときの予備。 |
+| `PATCH /api/mobile/profile` | 名前の更新。 |
+| `DELETE /api/mobile/account` | 退会。確認のメールアドレスと、5 分以内のログインが要る。 |
+| `/api/auth/expo-authorization-proxy` | Google ログインへの入口。飛び先は、自分の Google アプリの認可 URL だけ。 |
+
+要点:
+
+- **セッションを URL に載せません。** ブラウザからアプリへ戻るとき、セッションの代わりに、1 回限りの
+  コード(60 秒)を渡し、アプリが PKCE の verifier を添えて引き換えます。ブラウザには、セッションの
+  Cookie を置きません。
+- **戻り先は 2 種類。** モバイルとメールのリンクは、独自スキームのディープリンク(`betterauthmulti://`)。
+  デスクトップの Google は、アプリが一時的に開く受け口(`http://127.0.0.1:<ポート>`、RFC 8252)。
+- 設計の判断と、受け入れた限界は、`docs/design.md` にあります。
 
 ## 技術スタック
 
@@ -41,7 +79,7 @@
 | UI | React | 19.3 |
 | 言語 | TypeScript | 6.0 |
 | スタイル | Tailwind CSS | 4.3 |
-| 認証 | Better Auth | 1.7 |
+| 認証 | Better Auth(と `@better-auth/expo`) | 1.7 |
 | ORM / マイグレーション | Drizzle ORM / drizzle-kit | 0.45 / 0.31 |
 | DB ドライバ | pg(node-postgres) | 8.23 |
 | メール送信 | Resend | 6.32 |
@@ -52,6 +90,7 @@
 | DB | Postgres(本番は Neon、CI は 17) | - |
 | ホスティング | Vercel(Web)、Render(Go API と DB) | - |
 | 連携先の Go API | Go、pgx、jwx(別リポジトリ) | 1.27 / 5.11 / 3.3 |
+| 連携先のクライアント | Expo(モバイル)、Tauri(デスクトップ)(別リポジトリ) | - |
 
 ## 手元で動かす
 
@@ -114,6 +153,8 @@ npm run dev                    # http://localhost:3000
 - **Vitest**: ロジック、Better Auth の設定、Server Action の結線、実 Postgres での外部キーや
   マイグレーション、HTTP 越しの `apiRequest`、Cron の削除。
 - **Playwright(E2E)**: ログイン、編集、退会を、本物の Go API と Postgres で通す。
+- ネイティブ向け: コードと PKCE の引き換え、ブラウザにセッションを置かないこと、Google の入口のガード、
+  ログイン CSRF の防御を、本物の Better Auth(メモリ上の DB)で通すテストがあります。
 - 守りたい設定を壊すと、テストが落ちることを、そのつど確かめています。
 - CI(GitHub Actions)は、`check`(型、lint、テスト、ビルド)と `e2e` の 2 ジョブ。DB を使う
   テストが SKIP されると、失敗にします。
