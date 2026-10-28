@@ -4,6 +4,7 @@ import { memoryAdapter } from "better-auth/adapters/memory";
 import {
   googleAuthOptions,
   isGoogleAuthorizationUrl,
+  isNativeAppState,
   isSafeOauthState,
 } from "@/lib/google-auth-options";
 import { nativeClientPlugins } from "@/lib/native-clients";
@@ -148,6 +149,13 @@ function createTestAuth(
 
 const ENABLED = { clientId: OURS.clientId, clientSecret: "client-secret" };
 
+async function nativeSignInUrl(auth: ReturnType<typeof createTestAuth>): Promise<string> {
+  const { url } = await auth.api.signInSocial({
+    body: { provider: "google", callbackURL: "betterauthmulti://" },
+  });
+  return url ?? "";
+}
+
 function proxy(
   auth: ReturnType<typeof createTestAuth>,
   authorizationURL: string,
@@ -183,12 +191,35 @@ describe("/expo-authorization-proxy", () => {
   });
 
   it("passes the oauthState route, and sets the oauth_state cookie", async () => {
-    const res = await proxy(createTestAuth(ENABLED), GOOGLE, "abc.def");
+    const auth = createTestAuth(ENABLED);
+    const url = await nativeSignInUrl(auth);
+    const res = await proxy(auth, url, "abc.def");
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(GOOGLE);
-    expect(
-      res.headers.getSetCookie().map((cookie) => cookie.split("=")[0]),
-    ).toContain("better-auth.oauth_state");
+    expect(res.headers.get("location")).toBe(url);
+    expect(res.headers.getSetCookie().map((cookie) => cookie.split("=")[0])).toContain(
+      "better-auth.oauth_state",
+    );
+  });
+
+  it("refuses a state made for a web page: it would sign the victim's browser in as the attacker", async () => {
+    // Login CSRF: an attacker starts a Google sign-in of his own account that returns to the web
+    // app, keeps the state, and has the victim open the proxy with it. Without this check the
+    // proxy plants the state cookie, and the callback signs the victim's browser in.
+    const auth = createTestAuth(ENABLED);
+    const { url } = await auth.api.signInSocial({
+      body: { provider: "google", callbackURL: "/" },
+    });
+    for (const oauthState of [undefined, "abc"]) {
+      const res = await proxy(auth, url ?? "", oauthState);
+      expect(res.status).toBe(400);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+  });
+
+  it("refuses a state this server never made", async () => {
+    const res = await proxy(createTestAuth(ENABLED), GOOGLE);
+    expect(res.status).toBe(400);
+    expect(res.headers.getSetCookie()).toEqual([]);
   });
 
   it("does not redirect to another site or another app, and sets no cookie", async () => {
@@ -226,5 +257,45 @@ describe("/expo-authorization-proxy", () => {
     const res = await proxy(createTestAuth(null), GOOGLE);
     expect(res.status).toBe(400);
     expect(res.headers.getSetCookie()).toEqual([]);
+  });
+});
+
+describe("isNativeAppState", () => {
+  const TRUSTED = ["betterauthmulti://"];
+  const record = (callbackURL: unknown, expiresAt = new Date(Date.now() + 60_000)) => ({
+    value: JSON.stringify({ callbackURL }),
+    expiresAt,
+  });
+  const check = (found: { value: string; expiresAt: Date } | null, state: string | null = "s") =>
+    isNativeAppState(state, { find: async () => found, trustedOrigins: TRUSTED });
+
+  it("accepts a state made for the app's deep link", async () => {
+    expect(await check(record("betterauthmulti:///?state=x&cc=y"))).toBe(true);
+  });
+
+  it("looks the state up under Better Auth's identifier", async () => {
+    const asked: string[] = [];
+    await isNativeAppState("abc", {
+      find: async (identifier) => {
+        asked.push(identifier);
+        return null;
+      },
+      trustedOrigins: TRUSTED,
+    });
+    expect(asked).toEqual(["auth-state:abc"]);
+  });
+
+  it("refuses everything else", async () => {
+    expect(await check(null)).toBe(false);
+    expect(await check(null, null)).toBe(false);
+    expect(await check(record("/"))).toBe(false);
+    expect(await check(record("https://evil.example/"))).toBe(false);
+    expect(await check(record("otherapp://x"))).toBe(false);
+    expect(await check(record(42))).toBe(false);
+    expect(await check({ value: "not json", expiresAt: new Date(Date.now() + 60_000) })).toBe(false);
+    expect(await check(record("betterauthmulti://x", new Date(Date.now() - 1)))).toBe(false);
+    expect(
+      await isNativeAppState("s", { find: async () => record("betterauthmulti://x"), trustedOrigins: undefined }),
+    ).toBe(false);
   });
 });

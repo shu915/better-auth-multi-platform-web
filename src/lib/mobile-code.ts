@@ -159,6 +159,23 @@ export async function replaceCookieWithCode(
   return url.toString();
 }
 
+// The cookies that make a browser signed in: the session token, the session cache and the
+// "don't remember me" flag. A cookie that only deletes one (empty value) is kept.
+const SESSION_COOKIE_NAME = /^(?:__Secure-)?better-auth\.(?:session_token|session_data|dont_remember)=([^;]*)/;
+
+/**
+ * The Set-Cookie headers of a redirect to the app, without the ones that sign the browser in. The
+ * app gets its session through the code, and the browser has no use for it. Left in, a callback
+ * opened in a browser whose OAuth state cookie matches (see isNativeAppState) would sign that
+ * browser in, as whoever the code belongs to.
+ */
+export function withoutSessionCookies(setCookies: string[]): string[] {
+  return setCookies.filter((cookie) => {
+    const match = SESSION_COOKIE_NAME.exec(cookie);
+    return match === null || match[1] === "";
+  });
+}
+
 // The paths where expo() adds the cookie to the redirect.
 const redirectsWithSession = (path: string | undefined) =>
   !!path &&
@@ -181,7 +198,15 @@ export function mobileCodeExchange(): BetterAuthPlugin {
                 await ctx.context.internalAdapter.createVerificationValue({ identifier, value, expiresAt });
               },
             });
-            if (next !== null) ctx.setHeader("location", next);
+            if (next === null) return;
+            ctx.setHeader("location", next);
+            // To the app: the session goes by the code only, so the browser keeps none.
+            const headers = ctx.context.responseHeaders;
+            if (headers) {
+              const kept = withoutSessionCookies(headers.getSetCookie());
+              headers.delete("set-cookie");
+              for (const cookie of kept) headers.append("set-cookie", cookie);
+            }
           }),
         },
       ],
