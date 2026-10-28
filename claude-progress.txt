@@ -23,6 +23,8 @@ claude-progress.txt (web)
 
 - ネイティブの Google の入口 `/api/auth/expo-authorization-proxy` を、自分の Google アプリに限った(ブランチ fix/expo-proxy-open-redirect、`guardAccountEndpoints`)。プラグイン本体は https で自ドメイン以外なら何でも通していた(open redirect)。飛び先は Google の認可 URL で、`client_id` と `redirect_uri` が自分のものだけ。URL と `oauthState` の長さ制限あり。Google が無効なら閉じる。テストは src/lib/expo-proxy.test.ts、理由は docs/design.md
 
+- ログイン CSRF(ブランチ fix/oauth-login-csrf): プロキシは、ネイティブのディープリンクの `state` だけ通す。ディープリンクへ戻す応答は、ブラウザにセッションの Cookie を置かない。詳細は docs/design.md
+
 ## 実行中のタスク
 - feature/mobile-code-exchange(レビューの S3): マジックリンクで戻るディープリンクに、セッションを載せない。`expo()` は、リンクに `?cookie=<署名付きセッション>` を付ける(独自スキームは他のアプリも登録できるので盗まれる)。`mobileCodeExchange()`(src/lib/mobile-code.ts。`sessionRedirectPlugins()` で `expo()` の直後に置く)が、それを取り除いて、60 秒で失効する 1 回限りの `?code=` に置き換える。アプリは `POST /api/mobile/exchange`(`{code, verifier}`。src/lib/mobile-exchange.ts)で、PKCE(RFC 7636)の verifier を添えて、セッションに引き換える。`cc`(challenge)のないリンクにはセッションを渡さない(`?error=missing_challenge`)。コードは 1 回で使い切り、保存するのはコードのハッシュと、暗号化した Cookie と、challenge。拒否の理由は応答に出さず、ログにだけ出す(`[mobile-exchange] refused: …`)。本文は 2KB まで(バイト数で数える。`readLimitedText`)
   - 状態: 1 コミット済み(1b49b84)+ レビューの反映(暗号化して保存、本文の上限、足りなかったテスト)が未コミット。vitest 251 件、tsc、lint、build は通る。evaluator は合格(その後のレビューの指摘も反映)。iOS で、ログインの成功(`exchange 200`)と、同じリンクの再利用が失敗することを確認済み。Android も、JS を再読み込みしたあと、ログインできた。暗号化のあとの、もう一度のログインは、端末で未確認
@@ -30,7 +32,7 @@ claude-progress.txt (web)
   - 残る限界: 攻撃者が自分の `cc` を付けたログインメールを被害者に送らせ、被害者がそのリンクを開き、被害者の端末に攻撃者のアプリがある場合は、コードを取られる。Universal Links / App Links が要る(ドメインとストアの設定が決まってから)。別のアプリが、コードを横取りして、でたらめな verifier で先に引き換えると、本物のアプリのログインは失敗する(セッションは盗まれない)
 
 ## 未確認
-- ネイティブの Google の入口(expo-authorization-proxy)が、ログイン CSRF(被害者のブラウザを攻撃者のアカウントでログインさせる)に使えるか。プロキシは、どの `state` の Cookie でも置く。Web 向けの callbackURL の `state` と、ディープリンクの `state` の 2 つで、callback まで通して、別のブラウザにセッションが付くかを実験する(デスクトップの Google の最初に。成立したら、ディープリンクの `state` だけを通す。docs/design.md)
+- (確認済み 2026-10-28)ネイティブの Google の入口のログイン CSRF は、実験で成立を確認し、ブランチ fix/oauth-login-csrf で塞いだ。マージ前は未対応
 - Cron がスケジュールどおり動くか(Vercel のログで `[cleanup] removed` を見る)
 - Render DB の verify-full(api の DATABASE_URL)
 - Google の解除の本番での通し

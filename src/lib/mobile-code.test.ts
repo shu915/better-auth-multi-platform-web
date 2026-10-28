@@ -14,6 +14,7 @@ import {
   sessionRedirectPlugins,
   setsSession,
   replaceCookieWithCode,
+  withoutSessionCookies,
 } from "@/lib/mobile-code";
 
 // The real plugin chain of auth.ts (in memory): a sign-in link verified over HTTP must send the
@@ -329,5 +330,24 @@ describe("setsSession", () => {
     expect(url.searchParams.has("code")).toBe(false);
     expect(url.searchParams.has("error")).toBe(false);
     expect(stored).toEqual([]);
+  });
+});
+
+describe("withoutSessionCookies", () => {
+  it("drops the cookies that sign a browser in, and keeps the rest", () => {
+    expect(
+      withoutSessionCookies([
+        "better-auth.session_token=abc.sig; Path=/; HttpOnly",
+        "__Secure-better-auth.session_token=abc.sig; Path=/; Secure",
+        "better-auth.session_data=eyJ; Path=/",
+        "better-auth.dont_remember=true; Path=/",
+        "better-auth.state=s.sig; Path=/",
+      ]),
+    ).toEqual(["better-auth.state=s.sig; Path=/"]);
+  });
+
+  it("keeps a cookie that only deletes a session", () => {
+    const deleting = "better-auth.session_token=; Max-Age=0; Path=/";
+    expect(withoutSessionCookies([deleting])).toEqual([deleting]);
   });
 });

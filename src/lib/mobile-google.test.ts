@@ -190,3 +190,55 @@ describe("signing in with Google from the native app", () => {
     expect(location.searchParams.get("error")).not.toBeNull();
   });
 });
+
+// Login CSRF: the proxy plants a state cookie in whatever browser opens it, so an attacker can make
+// a victim's browser finish the attacker's own Google sign-in (his code, his state). Both ways to
+// sign that browser in are closed: the proxy only takes a state made for the app, and the callback
+// to the app hands the browser no session (the app gets it by the code).
+describe("login CSRF through the sign-in proxy", () => {
+  const sessionCookiesOf = (setCookie: string[]) =>
+    setCookie.filter((cookie) => /session_token=[^;]+/.test(cookie));
+
+  async function attack(callbackURL: string) {
+    const t = createTestAuth();
+    const own = await t.signIn("attacker@example.com");
+    await t.viaGoogle({ sub: "g-att", email: "attacker@example.com" }, `${SCHEME}/?state=link`, own);
+
+    // The attacker starts a sign-in of his own linked Google account, and keeps the state.
+    google = { sub: "g-att", email: "attacker@example.com" };
+    const start = await t.auth.api.signInSocial({
+      body: { provider: "google", callbackURL, errorCallbackURL: callbackURL },
+      headers: new Headers(),
+      asResponse: true,
+    });
+    const { url } = (await start.json()) as { url: string };
+    const state = new URL(url).searchParams.get("state") ?? "";
+
+    // Victim, link 1: the proxy. Victim, link 2: the callback with the attacker's code and state.
+    const planted = await t.auth.handler(
+      new Request(`${BASE}/api/auth/expo-authorization-proxy?authorizationURL=${encodeURIComponent(url)}`),
+    );
+    const callback = await t.auth.handler(
+      new Request(`${BASE}/api/auth/callback/google?code=code&state=${state}`, {
+        headers: { cookie: cookiesOf(planted) },
+      }),
+    );
+    return { planted, callback };
+  }
+
+  it("does not plant the state of a sign-in that returns to the web app", async () => {
+    const { planted, callback } = await attack("/");
+    expect(planted.status).toBe(400);
+    expect(sessionCookiesOf(callback.headers.getSetCookie())).toEqual([]);
+    expect(callback.headers.get("location")).toContain("error=state_mismatch");
+  });
+
+  it("signs the victim's browser in for neither, when the sign-in returns to the app", async () => {
+    const { planted, callback } = await attack(`${SCHEME}/?state=s9&cc=${challengeOf(newVerifier())}`);
+    expect(planted.status).toBe(302);
+    // The redirect to the app carries the code (the app's own way to the session) ...
+    expect(callback.headers.get("location")).toContain("code=");
+    // ... and the browser is given no session.
+    expect(sessionCookiesOf(callback.headers.getSetCookie())).toEqual([]);
+  });
+});

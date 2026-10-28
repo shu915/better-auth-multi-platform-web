@@ -116,6 +116,38 @@ export function isSafeOauthState(value: unknown): boolean {
   return true;
 }
 
+// Whether this OAuth `state` was made for a native app: its stored record (made by /sign-in/social
+// or /link-social, 10 minutes) says the user comes back to a deep link of a scheme we trust (not to
+// a web page). The proxy plants the `state` cookie in whoever's browser opens it, and the callback
+// accepts any `state` that browser's cookie matches, so a `state` an attacker made for the web (with
+// his own Google account's code) would sign the victim's browser in as the attacker. Only a `state`
+// made for the app passes, and the callback then hands the browser no session (see mobile-code.ts).
+// The record is Better Auth's own: identifier "auth-state:<state>", value JSON with `callbackURL`.
+// (The version is pinned, and the tests run the real flow, so a change of format fails them.)
+export async function isNativeAppState(
+  state: string | null,
+  deps: {
+    find: (identifier: string) => Promise<{ value: string; expiresAt: Date } | null | undefined>;
+    trustedOrigins: unknown;
+    now?: Date;
+  },
+): Promise<boolean> {
+  if (state === null || state === "") return false;
+  const record = await deps.find(`auth-state:${state}`);
+  if (!record || record.expiresAt.getTime() <= (deps.now ?? new Date()).getTime()) return false;
+  try {
+    const callbackURL: unknown = (JSON.parse(record.value) as { callbackURL?: unknown }).callbackURL;
+    if (typeof callbackURL !== "string") return false;
+    const { protocol } = new URL(callbackURL);
+    if (protocol === "http:" || protocol === "https:") return false;
+    return (
+      Array.isArray(deps.trustedOrigins) && deps.trustedOrigins.includes(`${protocol}//`)
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Runs before every Better Auth endpoint. Three jobs: refuse the server-only endpoints over HTTP,
 // keep the native sign-in proxy on Google, and make linking need a recent sign-in, like unlinking
 // already does. No session at all is left to the endpoint's own check, which answers 401.
@@ -153,11 +185,15 @@ const guardAccountEndpoints = createAuthMiddleware(async (ctx) => {
             redirectUri: `${ctx.context.baseURL}/callback/google`,
           }
         : null;
-    if (
-      ours === null ||
-      !isGoogleAuthorizationUrl(ctx.query?.authorizationURL, ours) ||
-      !isSafeOauthState(ctx.query?.oauthState)
-    ) {
+    const valid =
+      ours !== null &&
+      isGoogleAuthorizationUrl(ctx.query?.authorizationURL, ours) &&
+      isSafeOauthState(ctx.query?.oauthState) &&
+      (await isNativeAppState(new URL(String(ctx.query?.authorizationURL)).searchParams.get("state"), {
+        find: (identifier) => ctx.context.internalAdapter.findVerificationValue(identifier),
+        trustedOrigins: ctx.context.options.trustedOrigins,
+      }));
+    if (!valid) {
       throw APIError.from("BAD_REQUEST", {
         message: "Invalid authorizationURL",
         code: "INVALID_AUTHORIZATION_URL",
