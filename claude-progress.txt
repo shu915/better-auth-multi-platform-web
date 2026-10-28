@@ -25,6 +25,8 @@ claude-progress.txt (web)
 
 - ログイン CSRF(ブランチ fix/oauth-login-csrf): プロキシは、ネイティブのディープリンクの `state` だけ通す。ディープリンクへ戻す応答は、ブラウザにセッションの Cookie を置かない。詳細は docs/design.md
 
+- ブラウザが「アプリを開く」を出さないとログインできない問題への対策(ブランチ feat/exchange-by-state): 同じ記録を `state` のハッシュでも保存し、`POST /api/mobile/exchange-state`(`{state, verifier}`)で、コードなしで引き換えられる。待っている間、アプリが数秒おきに聞く(デスクトップが先に使う)。詳細は docs/design.md
+
 ## 実行中のタスク
 - feature/mobile-code-exchange(レビューの S3): マジックリンクで戻るディープリンクに、セッションを載せない。`expo()` は、リンクに `?cookie=<署名付きセッション>` を付ける(独自スキームは他のアプリも登録できるので盗まれる)。`mobileCodeExchange()`(src/lib/mobile-code.ts。`sessionRedirectPlugins()` で `expo()` の直後に置く)が、それを取り除いて、60 秒で失効する 1 回限りの `?code=` に置き換える。アプリは `POST /api/mobile/exchange`(`{code, verifier}`。src/lib/mobile-exchange.ts)で、PKCE(RFC 7636)の verifier を添えて、セッションに引き換える。`cc`(challenge)のないリンクにはセッションを渡さない(`?error=missing_challenge`)。コードは 1 回で使い切り、保存するのはコードのハッシュと、暗号化した Cookie と、challenge。拒否の理由は応答に出さず、ログにだけ出す(`[mobile-exchange] refused: …`)。本文は 2KB まで(バイト数で数える。`readLimitedText`)
   - 状態: 1 コミット済み(1b49b84)+ レビューの反映(暗号化して保存、本文の上限、足りなかったテスト)が未コミット。vitest 251 件、tsc、lint、build は通る。evaluator は合格(その後のレビューの指摘も反映)。iOS で、ログインの成功(`exchange 200`)と、同じリンクの再利用が失敗することを確認済み。Android も、JS を再読み込みしたあと、ログインできた。暗号化のあとの、もう一度のログインは、端末で未確認

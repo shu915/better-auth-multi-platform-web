@@ -52,3 +52,21 @@ export async function allowMagicLinkTo(email: string): Promise<boolean> {
 export function addressKey(email: string): string {
   return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
+
+/**
+ * The state exchange of the native app (/api/mobile/exchange-state) is asked every few seconds by
+ * every app that waits for a sign-in, and needs no session: a flood of made-up states would cost
+ * a database transaction each. Per client address; the app asks 30 times a minute at most.
+ */
+export const exchangeStateLimiter = limiter("exchange-state", { windowMs: 60_000, max: 60 });
+
+/**
+ * The key for a request's client: a hash of its address (the first of x-forwarded-for, which Vercel
+ * sets; x-real-ip otherwise), so the rate_limit table never holds the address. Without either (local
+ * development) every request shares one key.
+ */
+export function clientKey(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const address = forwarded || request.headers.get("x-real-ip")?.trim() || "unknown";
+  return createHash("sha256").update(address).digest("hex");
+}

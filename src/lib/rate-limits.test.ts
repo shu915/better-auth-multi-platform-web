@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { addressKey, allowMagicLinkTo, resetMemoryRateLimits } from "@/lib/rate-limits";
+import {
+  addressKey,
+  allowMagicLinkTo,
+  clientKey,
+  exchangeStateLimiter,
+  resetMemoryRateLimits,
+} from "@/lib/rate-limits";
 
 beforeEach(() => {
   resetMemoryRateLimits();
@@ -22,6 +28,32 @@ describe("allowMagicLinkTo", () => {
   it("keeps addresses apart, so one person's inbox being full does not block another", async () => {
     for (let i = 0; i < 5; i++) await allowMagicLinkTo("a@example.com");
     expect(await allowMagicLinkTo("b@example.com")).toBe(true);
+  });
+});
+
+describe("exchangeStateLimiter", () => {
+  it("allows the app's polling (30 a minute) and stops a flood, per client", async () => {
+    for (let i = 0; i < 60; i++) {
+      expect((await exchangeStateLimiter.check("client-a")).allowed).toBe(true);
+    }
+    expect((await exchangeStateLimiter.check("client-a")).allowed).toBe(false);
+    expect((await exchangeStateLimiter.check("client-b")).allowed).toBe(true);
+  });
+});
+
+describe("clientKey", () => {
+  const request = (headers: Record<string, string>) => new Request("http://localhost/x", { headers });
+
+  it("uses the first address of x-forwarded-for, then x-real-ip, and hashes it", () => {
+    const first = clientKey(request({ "x-forwarded-for": "203.0.113.5, 10.0.0.1" }));
+    expect(first).toBe(clientKey(request({ "x-forwarded-for": "203.0.113.5" })));
+    expect(first).toBe(clientKey(request({ "x-real-ip": "203.0.113.5" })));
+    expect(first).not.toContain("203.0.113.5");
+    expect(first).not.toBe(clientKey(request({ "x-forwarded-for": "203.0.113.6" })));
+  });
+
+  it("gives one shared key when there is no address (local development)", () => {
+    expect(clientKey(request({}))).toBe(clientKey(request({ "x-forwarded-for": " " })));
   });
 });
 
