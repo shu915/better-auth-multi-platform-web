@@ -1,6 +1,7 @@
 import type { BetterAuthOptions } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import type { GoogleCredentials } from "@/lib/google-oauth";
+import { isLoopbackUrl } from "@/lib/mobile-code";
 
 // How recently the user must have signed in to link a sign-in method or unlink one. Both are
 // the actions a stolen session would abuse (an attacker linking their own Google account keeps
@@ -138,7 +139,10 @@ export async function isNativeAppState(
   try {
     const callbackURL: unknown = (JSON.parse(record.value) as { callbackURL?: unknown }).callbackURL;
     if (typeof callbackURL !== "string") return false;
-    const { protocol } = new URL(callbackURL);
+    const parsed = new URL(callbackURL);
+    // The desktop app's own local receiver (http://127.0.0.1:<port>), like a deep link of the app.
+    if (isLoopbackUrl(parsed)) return true;
+    const { protocol } = parsed;
     if (protocol === "http:" || protocol === "https:") return false;
     return (
       Array.isArray(deps.trustedOrigins) && deps.trustedOrigins.includes(`${protocol}//`)

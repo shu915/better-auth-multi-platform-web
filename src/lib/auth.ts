@@ -27,6 +27,11 @@ const audience = process.env.JWT_AUDIENCE ?? "better-auth-multi-platform-api";
 // to a trusted origin, so the scheme must be listed. In development the expo plugin also trusts
 // "exp://" (Expo Go); that is not added here, so it never reaches production.
 const nativeAppOrigin = "betterauthmulti://";
+// The desktop app (Tauri) comes back from the browser to a receiver it opens on this machine for each
+// sign-in (RFC 8252, "loopback"): http://127.0.0.1:<port>. The port is its own choice, so any port is
+// trusted here, and only on the literal 127.0.0.1 (the code that hands over the session checks the
+// address again: isLoopbackUrl in mobile-code.ts).
+const nativeLoopbackOrigin = "http://127.0.0.1:*";
 
 // The user is created by the magic link (the root identity). Google is an optional extra way to
 // sign in that a signed-in user links from /profile; it can never create a user. It is on only
@@ -54,7 +59,7 @@ const policy = googleAuthOptions(google, {
 
 export const auth = betterAuth({
   baseURL,
-  trustedOrigins: [nativeAppOrigin],
+  trustedOrigins: [nativeAppOrigin, nativeLoopbackOrigin],
   database: drizzleAdapter(db, { provider: "pg", schema }),
   ...policy,
   // Count rate limits in the database, not in memory: on a serverless host (Vercel) each request

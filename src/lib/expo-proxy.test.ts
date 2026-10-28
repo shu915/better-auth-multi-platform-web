@@ -134,7 +134,7 @@ function createTestAuth(
   return betterAuth({
     baseURL: BASE,
     secret: "test-secret-test-secret-test-secret-123456",
-    trustedOrigins: ["betterauthmulti://"],
+    trustedOrigins: ["betterauthmulti://", "http://127.0.0.1:*"],
     database: memoryAdapter({
       user: [],
       session: [],
@@ -271,6 +271,19 @@ describe("isNativeAppState", () => {
 
   it("accepts a state made for the app's deep link", async () => {
     expect(await check(record("betterauthmulti:///?state=x&cc=y"))).toBe(true);
+  });
+
+  it("accepts a state made for the desktop app's own loopback receiver, and no other http address", async () => {
+    expect(await check(record("http://127.0.0.1:51234/cb?state=x&cc=y"))).toBe(true);
+    for (const other of [
+      "http://localhost:51234/cb",
+      "http://127.0.0.1/cb",
+      "https://127.0.0.1:51234/cb",
+      "http://127.0.0.1.evil.example:51234/cb",
+      "http://evil.example/",
+    ]) {
+      expect(await check(record(other)), other).toBe(false);
+    }
   });
 
   it("looks the state up under Better Auth's identifier", async () => {
