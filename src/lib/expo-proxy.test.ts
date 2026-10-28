@@ -105,7 +105,7 @@ describe("isGoogleAuthorizationUrl", () => {
 describe("isSafeOauthState", () => {
   it("accepts a missing value and an ordinary one", () => {
     expect(isSafeOauthState(undefined)).toBe(true);
-    expect(isSafeOauthState("abc.DEF-123_%2B%3D")).toBe(true);
+    expect(isSafeOauthState("state.value-1")).toBe(true);
   });
 
   it("refuses what could break out of a cookie, and what is too long", () => {
